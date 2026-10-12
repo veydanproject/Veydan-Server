@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2
+
+The bridge is VLink 0.3.0: it reports straight to the registry of its network and carries no built-in address of another bridge.
+A network may hold a new bridge until its owner approves it; the card of an open bridge says so.
+
 ## 0.1.1
 
 The first release of the kit with its archive: one installer that asks what it needs and puts up a relay, a media server, a push server, a node of calls or a bridge on Debian 13.

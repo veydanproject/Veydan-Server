@@ -126,7 +126,7 @@ Bridge  203.0.113.7:443#300d0089…
   veydan://vlink/300d0089…?a=203.0.113.7%3A443
 ```
 
-- **Open** (the default): the bridge tells the registry of the network it exists and starts carrying traffic once a hub has reached it, within minutes. There is nothing more to do.
+- **Open** (the default): the bridge tells the registry of the network it exists. A network may hold a new bridge until its owner approves it in the project's panel; then a hub reaches it, within minutes, and it carries traffic. There is nothing more to do.
 - **Private**: the bridge is told to nobody. Give the link to the people it is for; they add it in Chat → Settings → Network → Bridges → Add bridge.
 
 Without questions: `… | sudo bash -s -- --bridge --yes` (port 443, open), or a `server.conf` beside the installer with `BRIDGE_PORT`, `BRIDGE_PRIVATE`, `BRIDGE_PUBLIC_IP`.
