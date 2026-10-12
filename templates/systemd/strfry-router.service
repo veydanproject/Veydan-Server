@@ -1,0 +1,45 @@
+[Unit]
+Description=strfry router (sync with upstream Veydan relays)
+# Shares the LMDB database with the relay.
+After=strfry.service network-online.target
+Wants=network-online.target
+BindsTo=strfry.service
+
+[Service]
+User=strfry
+Group=strfry
+ExecStart=/opt/strfry/bin/strfry --config=/opt/strfry/etc/strfry.conf router /opt/strfry/etc/router.conf
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+UMask=0027
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ReadWritePaths=/opt/strfry/data
+
+[Install]
+WantedBy=multi-user.target

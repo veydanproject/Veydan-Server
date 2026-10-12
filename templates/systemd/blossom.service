@@ -1,0 +1,62 @@
+[Unit]
+Description=blossom-server (Veydan media)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=blossom
+Group=blossom
+WorkingDirectory=/opt/blossom/app
+Environment=DENO_DIR=/opt/blossom/cache
+Environment=HOME=/opt/blossom/data
+Environment=DENO_NO_UPDATE_CHECK=1
+# The index and R2 are reached over TLS: Mozilla's roots plus the system's.
+# The libsql client goes through Deno's node-compatible fetch, which reads
+# only NODE_EXTRA_CA_CERTS, hence the second line (Debian's bundle; a
+# certificate added with update-ca-certificates lands in it).
+Environment=DENO_TLS_CA_STORE=system,mozilla
+Environment=NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+# A missing or broken config.yml stops the server instead of running on
+# defaults (which would expire files after a week).
+Environment=BLOSSOM_REQUIRE_CONFIG=1
+EnvironmentFile=/opt/blossom/etc/blossom.env
+# -P: the permission set of the app's deno.json. --frozen: modules only as
+# the lock file names them.
+ExecStart=/opt/blossom/deno/deno run -P --frozen main.ts ${V_BLOSSOM_CONFIG}
+Restart=always
+RestartSec=2
+TimeoutStopSec=20
+UMask=0027
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+# Not set: V8 compiles JavaScript to machine code (MemoryDenyWriteExecute
+# would kill it).
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# V8 guards its JIT memory with protection keys (pkey_alloc is syscall 330).
+SystemCallFilter=pkey_alloc pkey_free pkey_mprotect
+ReadWritePaths=/opt/blossom/data /opt/blossom/cache
+
+[Install]
+WantedBy=multi-user.target

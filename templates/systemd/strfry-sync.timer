@@ -1,0 +1,10 @@
+[Unit]
+Description=strfry sync with the mesh peers every 10 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target

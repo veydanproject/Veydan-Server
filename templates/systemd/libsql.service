@@ -1,0 +1,45 @@
+[Unit]
+Description=libsql-server (shared blob index of the Veydan media servers)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=libsql
+Group=libsql
+# Loopback only: the local blossom directly, the others through nginx
+# (/index/ on the media host, token checked there).
+ExecStart=/opt/libsql/bin/sqld --db-path /opt/libsql/data/index --http-listen-addr 127.0.0.1:8080 --no-welcome
+Restart=always
+RestartSec=2
+TimeoutStopSec=20
+UMask=0027
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ReadWritePaths=/opt/libsql/data
+
+[Install]
+WantedBy=multi-user.target

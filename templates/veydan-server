@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# veydan-server: the server after the installer. Put in /usr/local/bin by
+# components/base.sh; the kit it runs is the one that installed this server
+# (/opt/veydan/kit/current).
+#
+#   veydan-server show            the card: addresses, keys, where things are
+#   veydan-server join-token      the key a new server of this network pastes
+#   veydan-server add <component> adds relay, media, vpush or call here
+#   veydan-server status          the services of this server
+#   veydan-server rerun           the installer again, with the saved answers
+set -euo pipefail
+
+STATE=${VEYDAN_STATE:-/opt/veydan}
+CONF=$STATE/server.conf
+
+die() { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
+need_root() { [ "$(id -u)" = 0 ] || die "run as root"; }
+kit() {
+    local k=$STATE/kit/current
+    [ -f "$k/run.sh" ] || die "no kit at $k: run install.sh once"
+    printf '%s' "$k"
+}
+
+case "${1:-}" in
+    show)
+        need_root
+        [ -f "$STATE/server.txt" ] || die "no $STATE/server.txt: run install.sh once"
+        cat "$STATE/server.txt"
+        ;;
+    join-token)
+        # The network part of server.conf, one line of base64 behind a
+        # prefix that names the format. It holds the keys of the network:
+        # give it to the admin of the next server and to nobody else. (The
+        # file is root's: that is the check.)
+        [ -r "$CONF" ] || die "no $CONF, or not readable: run install.sh once, as root"
+        net=$(sed -n '/^# ---- the network$/,/^# ---- this server$/p' "$CONF" | grep -v '^#')
+        [ -n "$net" ] || die "$CONF has no network part"
+        printf 'veydan-join-1.%s\n' "$(printf '%s\n' "$net" | base64 -w0)"
+        ;;
+    add)
+        need_root
+        [ -n "${2:-}" ] || die "veydan-server add relay|media|vpush|call"
+        exec bash "$(kit)/run.sh" --add "$2" --yes
+        ;;
+    rerun)
+        need_root
+        exec bash "$(kit)/run.sh" --yes
+        ;;
+    status)
+        # Every unit the kit keeps under /opt/<app>/etc, and nginx.
+        units=""
+        for f in /opt/*/etc/*.service /opt/*/etc/*.timer; do
+            [ -f "$f" ] || continue
+            u=$(basename "$f")
+            # A service run by its timer is told by the timer.
+            case "$u" in *.service) [ -f "${f%.service}.timer" ] && continue ;; esac
+            units="$units $u"
+        done
+        units="$units nginx"
+        # shellcheck disable=SC2086
+        systemctl --no-pager status $units 2>/dev/null | grep -E '^[●○×x]|Active:' || true
+        ;;
+    *)
+        sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+        exit 1
+        ;;
+esac

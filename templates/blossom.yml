@@ -1,0 +1,99 @@
+# blossom-server of the Veydan messenger, https://${V_MEDIA_FQDN}/
+# Made by run.sh once, then yours: a rerun leaves it and writes a
+# changed template as config.yml.new.  Apply: systemctl restart blossom
+#
+# Every blob is a chunk of a file the app has already encrypted: the server
+# never sees plaintext, names or types. It only has to store, keep and serve.
+
+port: 3000
+# Only nginx reaches it.
+host: 127.0.0.1
+
+# Blob URLs in answers and the BUD-11 `server` tag. The app builds URLs from
+# the manifest itself and ignores the ones in answers.
+publicDomain: "${V_MEDIA_FQDN}"
+
+# The index of the blobs this server stored: its own sqld on the loopback.
+database:
+${V_DATABASE}
+
+storage:
+  # s3: the bucket of the network; keys in /opt/blossom/etc/blossom.env.
+  # local: this server's disk; the other media servers ask this one.
+  backend: ${V_STORAGE_BACKEND}
+
+  local:
+    dir: /opt/blossom/data/blobs
+
+  s3:
+    endpoint: ${V_S3_ENDPOINT}
+    bucket: ${V_S3_BUCKET}
+    accessKey: "${S3_ACCESS_KEY}"
+    secretKey: "${S3_SECRET_KEY}"
+    region: ${V_S3_REGION}
+    # No publicURL: reads go through this server, the bucket stays private.
+    # Must hold the largest upload (20 MiB) times parallel uploads.
+    tmpDir: /opt/blossom/data/s3-tmp
+
+  # Files are kept for a while, not forever (as in WhatsApp): a blob nobody
+  # has downloaded for 14 days is deleted, from R2 and from the index at
+  # once. The clock starts at the upload and restarts at every download.
+  # Retention is done here and not by an R2 lifecycle rule: R2 would remove
+  # the object but leave the index row, and blossom would then answer "already
+  # exists" to a new upload of the same blob that is no longer there.
+  #
+  # The rules are also the upload allowlist, and an empty list refuses
+  # everything (the docs say otherwise, the code at 32567afb does this), so
+  # there is one rule for any type. Paid storage later: a rule with
+  # `pubkeys:` above this one, with a longer expiration.
+  removeWhenNoOwners: false
+  rules:
+    - type: "*"
+      expiration: 14 days
+
+upload:
+  enabled: true
+  # A signed kind-24242 event of the uploader, scoped to the blob's hash.
+  requireAuth: true
+  # The app's largest chunk is 16 MiB plus the 16-byte tag.
+  maxSize: 20971520
+  workers: 0
+  maxJobsPerWorker: 4
+  throughputWindowMs: 1000
+  # Open to every key, so a new user can send files at once.
+  # Closing it: pubkey-scoped rules and true here.
+  requirePubkeyInRule: false
+
+# Fetching arbitrary URLs on request: not needed, and a way to abuse the host.
+mirror:
+  enabled: false
+  requireAuth: true
+
+delete:
+  requireAuth: true
+
+# Who uploaded what is nobody's business.
+list:
+  enabled: false
+  requireAuth: true
+  allowListOthers: false
+
+# Would re-encode media; ours is ciphertext.
+media:
+  enabled: false
+  requireAuth: true
+  requirePubkeyInRule: true
+
+# Against this server's own index: what this server stored, it removes.
+prune:
+  initialDelayMs: 60000
+  intervalMs: 30000
+  batchSize: 1000
+
+# No public page with storage stats.
+landing:
+  enabled: false
+  title: "${V_NETWORK} media"
+
+report:
+  enabled: false

@@ -1,0 +1,55 @@
+# VPush of https://${V_VPUSH_FQDN}. Made by run.sh; yours, apart from the
+# block between "kit begin" and "kit end", which every run writes anew.
+#
+# Check:  /opt/vpush/bin/vpush check-config --config /opt/vpush/etc/vpush.toml
+# Apply:  systemctl reload vpush   (log levels)   /   systemctl restart vpush
+# An unknown key or a wrong type is an error, never silently ignored.
+
+public_url = "https://${V_VPUSH_FQDN}"
+
+[server]
+# nginx in front does TLS; VPush listens on the loopback only.
+listen = "127.0.0.1:8090"
+request_timeout_secs = 15
+max_body_bytes = 65536
+# nginx names the client in X-Real-IP; new devices are counted by it.
+trusted_proxy = true
+
+[admin]
+# Socket of `vpush ctl`. Only the vpush user and group can open it.
+socket = "/run/vpush/admin.sock"
+
+[log]
+format = "text"
+level = "info"
+
+# Changed on the running server with
+#   runuser -u vpush -- /opt/vpush/bin/vpush ctl --config /opt/vpush/etc/vpush.toml log set relay=debug --for 15m
+[log.targets]
+#relay = "debug"
+#nostr_sdk = "warn"
+
+[store]
+path = "/opt/vpush/data/vpush.db"
+
+# Relays VPush may watch. More [[relays.allow]] tables go below the kit's block.
+[relays]
+policy = "allow_list"
+
+# --- kit begin: the apps served (FCM_APPS of server.conf, keys in
+# etc/secrets/) and every relay of the network. Written anew on every run.
+${V_APPS}${V_RELAYS_ALLOW}
+# --- kit end
+
+[limits]
+devices_per_pubkey = 10
+relays_per_device = 16
+groups_per_device = 500
+registration_days = 30
+test_per_hour = 3
+devices_total = 100000
+
+[pipeline]
+throttle_secs = 20
+device_cap = 30
+device_window_secs = 60

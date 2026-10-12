@@ -1,0 +1,109 @@
+# One file: the network this server belongs to, and this server. Shell
+# syntax. The installer asks whatever is missing and saves the answers to
+# /opt/veydan/server.conf; a rerun asks nothing. Keys the installer makes
+# itself when they are empty.
+
+# ---- the network: the same on every server of it ---------------------------
+
+# The domain short names are completed with: relay → relay.<BASE_DOMAIN>.
+BASE_DOMAIN=example.org
+
+# A short word for the network: in the ids of the manifest and the join key.
+# Empty: the first label of BASE_DOMAIN.
+NETWORK=
+
+# Every relay and every media server of the network, short or full names,
+# space separated. Each relay connects to all the others (strfry router,
+# both ways) and syncs with them every few minutes, so an event published
+# anywhere reaches every relay. A media server that has not got a file
+# asks the bucket (S3 below) or, without one, the next media server.
+MESH_RELAYS="relay"
+MESH_MEDIA="media"
+
+# Real addresses of the servers, "<server>=<ipv4>" by SERVER below, when
+# the names go through a CDN and the servers should talk past it. Empty:
+# the servers talk by their names.
+MESH_ORIGINS=""
+
+# The app key goes into the manifest (every relay accepts it); the peer key
+# is for relay ↔ relay and push → relay. Made by the installer when empty.
+MESH_APP_KEY=
+MESH_PEER_KEY=
+
+# Media files: a bucket shared by every media server of the network (any
+# S3: Cloudflare R2, MinIO, …), or, with an empty endpoint, the disk of
+# each server. With a bucket every media server serves every file; with
+# disks a file is served by the server it was uploaded to and by the others
+# asking it.
+S3_ENDPOINT=
+S3_BUCKET=media
+S3_REGION=auto
+S3_ACCESS_KEY=
+S3_SECRET_KEY=
+
+# Certificates: letsencrypt (port 80 open, DNS pointing at the server) or
+# selfsigned (tests).
+TLS=letsencrypt
+ACME_EMAIL=
+
+# ufw: ssh (every port sshd listens on), 80 and 443 open, the rest closed.
+# none: the firewall is left as it is.
+FIREWALL=ufw
+
+# Admin's nostr pubkey (hex or npub) shown in NIP-11 of every relay. May be empty.
+ADMIN_PUBKEY=
+
+# ---- this server -----------------------------------------------------------
+
+# The server's name: a short word, the key of MESH_ORIGINS and the name
+# the components report under. Empty: the first label of its first name.
+SERVER=
+
+# What runs here: any of  relay media vpush call bridge
+COMPONENTS="relay media"
+
+# Names, short (relay → relay.example.org) or full. A relay must be one of
+# MESH_RELAYS, a media server one of MESH_MEDIA.
+RELAY_HOST=relay
+MEDIA_HOST=media
+VPUSH_HOST=push
+
+# Other names a role answers under: the names of a server this one takes
+# over (its relay, media, push), once their DNS is moved here. Served and
+# certified like the names above (the certificate of an alias is made when
+# its DNS points here: run veydan-server rerun after the move), never a
+# peer of this server. Short or full names, space separated.
+RELAY_ALIASES=""
+MEDIA_ALIASES=""
+VPUSH_ALIASES=""
+
+# Region in the manifest: a short word. Empty: the part of SERVER before
+# its first "-" (eu-2 → eu).
+REGION=
+
+# NIP-11 name of the relay. Empty: "<NETWORK> <relay name>".
+RELAY_NAME=
+
+# 1: do not compare the DNS of every name with this server's addresses
+# (behind NAT, or a provider that gives the public address elsewhere).
+SKIP_DNS_CHECK=0
+
+# Push: the apps served, space separated, and for each a Firebase service
+# account JSON named fcm-<app id>.json beside the installer (or any *.json
+# of a service account, when FCM_APPS names one app).
+FCM_APPS=""
+
+# The node of calls (component "call"): reached at the bare IP, not through
+# nginx. Empty address: this server's in MESH_ORIGINS, else its first one.
+CALL_PUBLIC_IP=
+CALL_PORT=8443
+CALL_SFU_PORT=3479
+CALL_RELAY_PORTS=49152-49999
+
+# A VLink bridge (component "bridge"): the port it listens on (443 is the
+# least blocked; not 80 or 443 beside a relay, media or push), whether it
+# is private (1: told to no registry, used by those who have its link), and
+# the public IPv4 of this server (empty: the one its default route uses).
+BRIDGE_PORT=443
+BRIDGE_PRIVATE=0
+BRIDGE_PUBLIC_IP=
