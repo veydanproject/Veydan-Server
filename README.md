@@ -135,6 +135,37 @@ Log: `journalctl -u vlink`. Update: run the same command again after a new versi
 
 A bridge beside a relay, media or push on one server cannot have 80 or 443 (they are nginx's): give it another port, or a server of its own.
 
+## A bridge and a call node: helping the network
+
+The project runs its servers outside the countries that close the way to them. Inside such a country it has nothing: the bridges there are volunteers', and so are the call nodes that make calls fast for people nearby.
+One server with a public IPv4 address does both, by one command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/veydanproject/Veydan-Server/main/install.sh | sudo bash -s -- --volunteer
+```
+
+It asks the port of the bridge (Enter keeps 443), whether the bridge is open or private, the public address of the server and a word for its region (`ru`, `eu`, …; Enter keeps `default`).
+Then it downloads the two programs from their releases, starts them, opens their ports in `ufw` and prints both references.
+Without questions: `… | sudo bash -s -- --volunteer --yes`.
+A call node alone, where no bridge is needed (outside such a country): the same command with `--call`.
+
+Both tell the registry of the Veydan network they exist. The network may hold a new bridge or node until its owner approves it; after that a hub reaches the bridge and it carries traffic, and the node carries the calls of people near it. There is nothing more to do.
+
+Open in the firewall of your provider what the installer names at the end: the port of the bridge (443/tcp), and for calls 8443/tcp, 3478 and 3479 (udp and tcp) and 49152-49999/udp.
+
+What each of them sees: a bridge — the address of a client and how much it sends, never who writes what to whom; a call node — addresses and volumes of a call, never the voice or the picture. Neither keeps keys or data of anyone.
+
+The same in docker, one container each:
+
+```sh
+docker run -d --name vlink --restart=unless-stopped --network=host -v vlink:/data rookbeam/vlink
+docker run -d --name vcall --restart=unless-stopped --network=host -v vcall:/data \
+  -e VCALL_LISTEN=0.0.0.0:8443 -e VCALL_PUBLIC_IP=<your-ip> -e VCALL_REGISTRY=https://hub.veydan.net/vlink rookbeam/vcall
+```
+
+Their keys are in `/opt/vlink/data` and `/opt/vcall/data`: they *are* the bridge and the node, keep them when you move the server.
+Logs: `journalctl -u vlink`, `journalctl -u vcall`. Update: the same command again after a new version of this kit.
+
 ## Calls
 
 The call node is the component `call`. Add it with `COMPONENTS` or `--add call`.

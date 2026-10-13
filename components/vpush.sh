@@ -18,14 +18,16 @@ mkdirp "$P/etc/secrets" 0700 vpush:vpush
 mkdirp "$P/data" 0750 vpush:vpush
 mkdirp "$P/data/backups" 0750 vpush:vpush
 
-# The binary: from the kit when it is there; else the installed one stays;
+# The binary: from the kit when it is there; else a build of one's own stays;
 # else the release of VPUSH_VERSION (versions.conf).
 if [ -f "$HERE/bin/vpush" ]; then
     ( cd "$HERE/bin" && sha256sum -c --quiet vpush.sha256 ) \
         || die "bin/vpush does not match bin/vpush.sha256: a damaged kit"
     run install -m 0755 "$HERE/bin/vpush" "$P/bin/vpush"
     say "vpush: $(cat "$HERE/bin/RELEASE" 2>/dev/null || echo '?')"
-elif [ ! -x "$(target "$P/bin/vpush")" ]; then
+elif needs_release "$P/bin/vpush" "${VPUSH_VERSION:-}"; then
+    # Nothing installed yet, or another release than the kit names: this is
+    # how the same command, run again, updates the program.
     fetch_program vpush Veydan-Push "${VPUSH_VERSION:-}" "$P/bin/vpush"
 fi
 

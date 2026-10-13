@@ -141,6 +141,19 @@ secret() { openssl rand -hex 32; }
 # machine (x86_64 or aarch64), checked against the SHA256SUMS of the
 # release; the kit of a checkout or of make server brings them in bin/
 # instead. Nothing on a dry run.
+# Whether the release <version> of a program must be fetched to <dest>:
+# nothing is installed there, or what is there is another release. A build
+# of one's own stays (its version says more than X.Y.Z: it was put there on
+# purpose), and so does everything while versions.conf names no release.
+needs_release() { # needs_release <dest> <version>
+    local bin have
+    bin=$(target "$1")
+    [ -x "$bin" ] || return 0
+    [ -n "$2" ] || return 1
+    have=$("$bin" --version 2>/dev/null | awk 'NR==1 {print $2}')
+    [[ "$have" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$have" != "$2" ]
+}
+
 fetch_program() {
     local prog=$1 repo=$2 version=$3 dest=$4 arch tmp base
     [ -n "$version" ] || die "$prog: no release to take it from yet (${prog^^}_VERSION of versions.conf is empty) and no bin/$prog in the kit"

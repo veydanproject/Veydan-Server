@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3
+
+`--volunteer`: a bridge and a call node for the Veydan network on one server, by one command, without a domain.
+The call node of a volunteer reports to the registry of the network by itself, as a bridge does.
+`--call`: the call node alone, the same way.
+The same command, run again, updates a program that came from a release: it stayed as first installed before.
+
 ## 0.1.2
 
 The bridge is VLink 0.3.0: it reports straight to the registry of its network and carries no built-in address of another bridge.

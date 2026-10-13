@@ -18,14 +18,16 @@ mkdirp "$P/bin" 0755 root:root
 mkdirp "$P/etc" 0750 root:vcall
 mkdirp "$P/data" 0750 vcall:vcall
 
-# The binary: from the kit when it is there; else the installed one stays;
+# The binary: from the kit when it is there; else a build of one's own stays;
 # else the release of VCALL_VERSION (versions.conf).
 if [ -f "$HERE/bin/vcall" ]; then
     ( cd "$HERE/bin" && sha256sum -c --quiet vcall.sha256 ) \
         || die "bin/vcall does not match bin/vcall.sha256: a damaged kit"
     run install -m 0755 "$HERE/bin/vcall" "$P/bin/vcall"
     say "vcall: $(cat "$HERE/bin/vcall.RELEASE" 2>/dev/null || echo '?')"
-elif [ ! -x "$(target "$P/bin/vcall")" ]; then
+elif needs_release "$P/bin/vcall" "${VCALL_VERSION:-}"; then
+    # Nothing installed yet, or another release than the kit names: this is
+    # how the same command, run again, updates the program.
     fetch_program vcall Veydan-Call "${VCALL_VERSION:-}" "$P/bin/vcall"
 fi
 
@@ -36,6 +38,9 @@ V_CALL_SFU_PORT=$CALL_SFU_PORT
 V_REGION=$REGION
 if [ -n "${VLINK_REGISTRY_HOST:-}" ]; then
     V_CALL_REGISTRY_LINE="VCALL_REGISTRY=https://$(fqdn "$VLINK_REGISTRY_HOST")/vlink"
+elif [ -n "${CALL_REGISTRY_URL:-}" ]; then
+    # A volunteer's node (--volunteer): the registry of the network it helps.
+    V_CALL_REGISTRY_LINE="VCALL_REGISTRY=$CALL_REGISTRY_URL"
 else
     V_CALL_REGISTRY_LINE="# no registry in this mesh (VLINK_REGISTRY_HOST is empty)"
 fi
@@ -67,6 +72,13 @@ if [ "$DRY" != 1 ]; then
     fi
 else
     run runuser -u vcall -- "$P/bin/vcall" id --data "$P/data" --addr "$CALL_PUBLIC_IP:$CALL_PORT"
+fi
+
+# A volunteer's node: what happens next, and what to open. (Its reference
+# is on the card already.)
+if [ -n "${CALL_REGISTRY_URL:-}" ]; then
+    CARD_SHOW+="$(msg card_call_public)"$'\n'
+    CARD_SHOW+="$(msg card_call_ports) $CALL_PORT/tcp, 3478/udp+tcp, $CALL_SFU_PORT/udp+tcp, $CALL_RELAY_PORTS/udp"$'\n'
 fi
 
 link_unit "$P/etc/vcall.service"

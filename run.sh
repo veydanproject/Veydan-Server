@@ -15,6 +15,9 @@
 #   run.sh --add call                 adds a component to an installed server
 #   run.sh --bridge                   a VLink bridge and nothing else: no domain,
 #                                     no certificate, one or two questions
+#   run.sh --volunteer                a bridge and a node of calls for the Veydan
+#                                     network: no domain, a few questions
+#   run.sh --call                     the node of calls alone, the same way
 #   run.sh --join <key>               joins the network of the key
 #                                     (veydan-server join-token on one of its servers)
 #   run.sh --dry-run ...              prints what it would do, writes the
@@ -40,7 +43,7 @@ KIT_LANG=""
 JOIN=""
 ONLY=""
 
-usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -49,6 +52,8 @@ while [ $# -gt 0 ]; do
         --add) ADD+=("${2:?--add needs a component}"); shift 2 ;;
         --join) JOIN=${2:?--join needs the key}; shift 2 ;;
         --bridge) ONLY=bridge; shift ;;
+        --volunteer) ONLY="bridge call"; shift ;;
+        --call) ONLY=call; shift ;;
         --dry-run) DRY=1; shift ;;
         --lang) KIT_LANG=${2:?--lang needs a code}; shift 2 ;;
         -y|--yes) YES=1; shift ;;
@@ -88,7 +93,7 @@ S3_ENDPOINT="" S3_BUCKET="" S3_REGION="" S3_ACCESS_KEY="" S3_SECRET_KEY=""
 TLS=letsencrypt ACME_EMAIL="" FIREWALL=ufw ADMIN_PUBKEY="" VLINK_REGISTRY_HOST=""
 SERVER="" COMPONENTS="" RELAY_HOST="" MEDIA_HOST="" VPUSH_HOST="" REGION="" RELAY_NAME="" SKIP_DNS_CHECK=0 FCM_APPS=""
 RELAY_ALIASES="" MEDIA_ALIASES="" VPUSH_ALIASES=""
-CALL_PUBLIC_IP="" CALL_PORT=8443 CALL_SFU_PORT=3479 CALL_RELAY_PORTS=49152-49999
+CALL_PUBLIC_IP="" CALL_PORT=8443 CALL_SFU_PORT=3479 CALL_RELAY_PORTS=49152-49999 CALL_REGISTRY_URL=""
 # Of older installs; read and set aside.
 MEDIA_INDEX_HOST="" MESH_INDEX_TOKEN="" MEDIA_MODE=""
 
@@ -112,8 +117,16 @@ elif [ -f "$FROM/server.conf" ] && [ "$FROM/server.conf" != "$STATE/server.conf"
     . "$FROM/server.conf"
 fi
 for c in "${ADD[@]}"; do has "$c" || COMPONENTS="${COMPONENTS:+$COMPONENTS }$c"; done
-# --bridge: a bridge and nothing else, whatever a file says.
+# --bridge, --volunteer, --call: these components and nothing else, whatever
+# a file says.
 [ -z "$ONLY" ] || COMPONENTS=$ONLY
+# A node of calls of a volunteer is no part of a network of its own: it
+# reports to the registry of the Veydan network, as a bridge does by itself
+# (VEYDAN_REGISTRY of versions.conf). A network of one's own names its
+# registry with VLINK_REGISTRY_HOST instead.
+if [[ " $ONLY " == *" call "* ]] && [ -z "${VLINK_REGISTRY_HOST:-}" ] && [ -z "$CALL_REGISTRY_URL" ]; then
+    CALL_REGISTRY_URL=$VEYDAN_REGISTRY
+fi
 [ -n "$COMPONENTS" ] || COMPONENTS="relay media"
 
 # A server with sites (relay, media, push behind nginx) has a domain,
@@ -217,6 +230,8 @@ fi
 # without one serves the region default.
 if [ -z "$REGION" ]; then
     case "$SERVER" in *-*) REGION=${SERVER%%-*} ;; *) REGION=default ;; esac
+    # A volunteer's server is named by its hoster, not by its region.
+    [ -z "$ONLY" ] || REGION=default
     [ "$FIRST" = 1 ] && { sites_wanted || has call; } && ask REGION q_region
 fi
 

@@ -23,7 +23,9 @@ if [ -f "$HERE/bin/vlink" ]; then
     ( cd "$HERE/bin" && sha256sum -c --quiet vlink.sha256 ) \
         || die "bin/vlink does not match bin/vlink.sha256: a damaged kit"
     run install -m 0755 "$HERE/bin/vlink" "$P/bin/vlink"
-elif [ ! -x "$(target "$P/bin/vlink")" ]; then
+elif needs_release "$P/bin/vlink" "${VLINK_VERSION:-}"; then
+    # Nothing installed yet, or another release than the kit names: this is
+    # how the same command, run again, updates the program.
     fetch_program vlink Veydan-Link "${VLINK_VERSION:-}" "$P/bin/vlink"
 fi
 
