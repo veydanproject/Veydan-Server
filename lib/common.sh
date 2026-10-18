@@ -155,6 +155,14 @@ needs_release() { # needs_release <dest> <version>
     [[ "$have" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$have" != "$2" ]
 }
 
+# Whether the relay has its read policy to put up (components/guard.sh):
+# bin/vguard of the kit, a vguard installed, or the release of Veydan-Push
+# named by VGUARD_VERSION. A relay is never put up without one.
+vguard_at_hand() {
+    [ -f "$HERE/bin/vguard" ] || [ -x "$(target /opt/vguard/bin/vguard)" ] || [ -n "${VGUARD_VERSION:-}" ]
+}
+NO_VGUARD="relay: no vguard, the read policy of the relay (not in bin/ of the kit, none installed, and VGUARD_VERSION of versions.conf names no release of Veydan-Push). Without it anyone with the app key could ask the relay for every gift wrap and every group event, so the relay is not put up: set VGUARD_VERSION in versions.conf, or put bin/vguard into the kit (make build-deploy)"
+
 fetch_program() {
     local prog=$1 repo=$2 version=$3 dest=$4 arch tmp base
     [ -n "$version" ] || die "$prog: no release to take it from yet (${prog^^}_VERSION of versions.conf is empty) and no bin/$prog in the kit"

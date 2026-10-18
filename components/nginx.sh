@@ -9,8 +9,8 @@
 N=$STATE/nginx
 V_ACME=$STATE/acme
 ACME=$STATE/acme
-# Where the WebSockets of the relay go: vguard when components/guard.sh
-# put it up, else strfry.
+# Where the WebSockets of the relay go: vguard, which components/guard.sh
+# puts up in front of strfry (a relay never goes without it).
 V_RELAY_WS=${V_RELAY_WS:-127.0.0.1:7777}
 say "nginx: $HOSTS"
 
@@ -63,6 +63,26 @@ rm -f "$cf"
 # An older install kept the relay key here.
 [ -f "$(target "$N/10-relay-key.conf")" ] && run rm -f "$N/10-relay-key.conf"
 
+# Media: with MEDIA_UPLOAD_KEY=required a write (upload, mirror, delete of a
+# blob) needs one of the two keys too (the peer key is for the other media
+# servers); a download and the list stay open. With "open" (a network whose
+# apps do not carry the key yet) neither the map nor the guards exist.
+MEDIA_KEY_MAP="" V_MEDIA_KEY_GUARD=""
+if [ "$MEDIA_UPLOAD_KEY" = required ]; then
+    MEDIA_KEY_MAP=$(cat <<'EOF'
+# Media: a write needs the app key or the peer key (MEDIA_UPLOAD_KEY=required).
+map "$request_method$uri$veydan_relay_denied" $veydan_media_denied {
+    "~^(PUT|POST|HEAD|DELETE)/(upload|mirror)/?1$" 1;
+    "~^DELETE/[0-9a-f]{64}(\.[a-z0-9]+)?1$" 1;
+    default 0;
+}
+EOF
+)
+    V_MEDIA_KEY_GUARD='        if ($veydan_media_denied) {
+            return 401;
+        }'
+fi
+
 # The keys nginx compares, from server.conf. The relay takes the app key
 # (what the app sends) or the peer key (the other relays, vpush); with the
 # peer key it is a peer to vguard.
@@ -82,6 +102,7 @@ map "\$veydan_key_query\$veydan_key_header" \$veydan_relay_denied {
     "00"    1;
     default 0;
 }
+$MEDIA_KEY_MAP
 # The peer key, alone: the other relays and vpush. The relay tells vguard
 # (X-Veydan-Role) that such a connection reads everything; with the app
 # key the read policy holds. Empty: no header at all.

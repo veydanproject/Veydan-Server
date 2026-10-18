@@ -17,8 +17,8 @@ V_RELAY_WS=127.0.0.1:7777
 
 # The binary: from the kit when it is there; else what is installed stays
 # (a build of one's own, or the release named); else the release of
-# VGUARD_VERSION (versions.conf).
-guard=""
+# VGUARD_VERSION (versions.conf): vguard-linux-<arch> of Veydan-Push,
+# signed as the component vguard. With none of them the relay is refused.
 if [ -f "$HERE/bin/vguard" ]; then
     ( cd "$HERE/bin" && sha256sum -c --quiet vguard.sha256 ) \
         || die "bin/vguard does not match bin/vguard.sha256: a damaged kit"
@@ -27,24 +27,11 @@ if [ -f "$HERE/bin/vguard" ]; then
     # install, not cp: cp over a running binary fails with "text file busy".
     run install -m 0755 "$HERE/bin/vguard" "$G/bin/vguard"
     say "vguard: $(cat "$HERE/bin/vguard.RELEASE" 2>/dev/null || echo '?') from the kit"
-    guard=1
 elif needs_release "$G/bin/vguard" "${VGUARD_VERSION:-}"; then
-    if [ -n "${VGUARD_VERSION:-}" ]; then
-        mkdirp "$G" 0755 root:root
-        mkdirp "$G/bin" 0755 root:root
-        fetch_program vguard Veydan-Push "$VGUARD_VERSION" "$G/bin/vguard"
-        guard=1
-    fi
-else
-    guard=1
-fi
-
-if [ -z "$guard" ]; then
-    warn "relay: no vguard (bin/vguard of the kit, or VGUARD_VERSION of versions.conf): nginx sends the relay straight to strfry, and with the app key anyone can ask for every gift wrap and every group event"
-    if [ -f "$(target /etc/systemd/system/vguard.service)" ]; then
-        run systemctl disable --now vguard
-    fi
-    return 0
+    [ -n "${VGUARD_VERSION:-}" ] || die "$NO_VGUARD"
+    mkdirp "$G" 0755 root:root
+    mkdirp "$G/bin" 0755 root:root
+    fetch_program vguard Veydan-Push "$VGUARD_VERSION" "$G/bin/vguard"
 fi
 
 say "vguard: the read policy in front of strfry"

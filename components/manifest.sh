@@ -74,6 +74,13 @@ json=$(jq -n \
     }')
 printf '%s\n' "$json" | put "$STATE/manifest-node.json" 0600 root:root
 
+# The link the app takes (veydan-server card): one maker for it, the command
+# itself, reading the files just written. Only a server with a relay has one.
+CARD_LINK=""
+if has relay; then
+    CARD_LINK=$(VEYDAN_STATE=$(target "$STATE") bash "$HERE/templates/veydan-server" card 2>/dev/null) || CARD_LINK=""
+fi
+
 # The card: what the admin needs, in their language.
 card() {
     echo "$(msg card_ready)  ($NETWORK, $SERVER, $(date -u +%F))"
@@ -82,6 +89,8 @@ card() {
     has vpush && printf '  %-7s https://%s\n' "$(msg card_push)" "$VPUSH_FQDN"
     has call  && printf '  %-7s %s\n' "$(msg card_call)" "$CALL_REF"
     has relay && echo "$(msg card_app)"
+    [ -z "$CARD_LINK" ] || echo "$(msg card_link): $CARD_LINK"
+    has media && echo "$(msg card_media_key)"
     has vpush && echo "$(msg card_push_note)"
     sites_wanted && echo "$(msg card_next)"
     echo "$(msg card_file)"
@@ -100,6 +109,7 @@ card() {
     echo "== Keys of the network (server.conf, the same on every server) =="
     echo "App key (in the manifest of every relay):  $MESH_APP_KEY"
     echo "   wss://<relay>/?key=<key>   or header   X-API-Key: <key>"
+    has media && echo "   the same on media: an upload (PUT/HEAD /upload, /mirror, DELETE of a blob) needs it; a download does not"
     echo "Peer key (relay ↔ relay, vpush → relay):   $MESH_PEER_KEY"
     echo
     echo "== This server =="

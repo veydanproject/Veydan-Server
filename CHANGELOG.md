@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.6
+
+The push server of a network comes from the release of Veydan-Push 0.4.0 too (`VPUSH_VERSION`), so `vpush` can be chosen at the install.
+
+A server with a relay has a new setting, `PUSH_GATEWAY` (`veydan` or `off`): the installer asks whether to wake phones through the push of the Veydan network, and `veydan-server push veydan|off` changes it later.
+For now it is only stored and shown on the card of the server.
+
+The media server takes an upload only with the key of the server (`?key=` or `X-API-Key`, the app key or the peer key), as the relay does; before, anyone with a nostr key could upload.
+Downloads and the list stay open. The app takes the key from the card of the server.
+
+`veydan-server card` prints the link that adds this server to the app (`--contact <npub>`: a link to a contact that carries the server along); the installer prints it at the end of a run.
+
+`veydan-server rerun` no longer breaks the kit: run through its own link, it made the link point to itself, and then `show`, `add`, `join-token` and `rerun` all failed.
+
+A relay is never put up without its read policy: vguard comes from the release of Veydan-Push 0.4.0 (`VGUARD_VERSION` in `versions.conf`), checked by its signature, unless the kit brings its own.
+When there is no vguard to install, the installer stops before it changes anything and says so; it no longer puts up a relay that gives every gift wrap and group event to anyone with the app key.
+A bridge, a call node and a volunteer's server have no relay and are not affected.
+
 ## 0.1.5
 
 The node of calls is VCall 0.1.1: it names the registry of the Veydan network by its own address; nothing of the node or of its protocol changed.

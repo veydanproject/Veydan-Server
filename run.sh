@@ -28,7 +28,9 @@
 # goes next to them as *.new), keys come from server.conf and never change.
 set -euo pipefail
 
-HERE=$(cd "$(dirname "$0")" && pwd)
+# -P: run through /opt/veydan/kit/current (a symlink) HERE must be the real
+# kit, or base.sh makes current point to itself.
+HERE=$(cd "$(dirname "$0")" && pwd -P)
 # shellcheck source=lib/common.sh
 . "$HERE/lib/common.sh"
 # shellcheck source=lib/release.sh
@@ -95,7 +97,7 @@ fi
 BASE_DOMAIN="" NETWORK="" MESH_RELAYS="" MESH_MEDIA="" MESH_ORIGINS="" MESH_APP_KEY="" MESH_PEER_KEY=""
 S3_ENDPOINT="" S3_BUCKET="" S3_REGION="" S3_ACCESS_KEY="" S3_SECRET_KEY=""
 TLS=letsencrypt ACME_EMAIL="" FIREWALL=ufw ADMIN_PUBKEY="" VLINK_REGISTRY_HOST=""
-SERVER="" COMPONENTS="" RELAY_HOST="" MEDIA_HOST="" VPUSH_HOST="" REGION="" RELAY_NAME="" SKIP_DNS_CHECK=0 FCM_APPS=""
+SERVER="" COMPONENTS="" RELAY_HOST="" MEDIA_HOST="" VPUSH_HOST="" REGION="" RELAY_NAME="" SKIP_DNS_CHECK=0 FCM_APPS="" PUSH_GATEWAY="" MEDIA_UPLOAD_KEY=""
 RELAY_ALIASES="" MEDIA_ALIASES="" VPUSH_ALIASES=""
 RELAY_RETENTION_DAYS=90
 CALL_PUBLIC_IP="" CALL_PORT=8443 CALL_SFU_PORT=3479 CALL_RELAY_PORTS=49152-49999 CALL_REGISTRY_URL=""
@@ -180,6 +182,9 @@ for c in $COMPONENTS; do
     [ "$c" != guard ] || die "guard is part of the relay (components/guard.sh), not a component of its own"
     [ -f "$HERE/components/$c.sh" ] || [ "$c" = relay ] || [ "$c" = media ] || die "unknown component: $c"
 done
+# A relay goes up only with its read policy: refused here, before anything
+# is built or installed (components/guard.sh checks it again).
+if has relay && ! vguard_at_hand; then die "$NO_VGUARD"; fi
 if [ -z "$BASE_DOMAIN" ] && sites_wanted; then
     ask BASE_DOMAIN q_domain
     [ -n "$BASE_DOMAIN" ] || die "BASE_DOMAIN is empty: the domain of this server"
@@ -240,6 +245,19 @@ if [ -z "$REGION" ]; then
     [ -z "$ONLY" ] || REGION=default
     [ "$FIRST" = 1 ] && { sites_wanted || has call; } && ask REGION q_region
 fi
+# Whether phones are woken through the push of the Veydan network. Only
+# stored for now (the card says it, p=); `veydan-server push` changes it.
+# --yes and a rerun keep what is saved, off at first.
+PUSH_GATEWAY=${PUSH_GATEWAY:-off}
+# Media takes an upload only with the key of the server (a plain setting,
+# not asked). A server installed before the setting existed keeps uploads
+# open: its apps do not carry the key yet.
+if [ -z "$MEDIA_UPLOAD_KEY" ]; then
+    if [ "$FIRST" = 1 ]; then MEDIA_UPLOAD_KEY=required; else MEDIA_UPLOAD_KEY=open; fi
+fi
+if has relay && [ "$FIRST" = 1 ]; then
+    ask PUSH_GATEWAY q_push_gateway "veydan off"
+fi
 
 # The keys of the network: made once, here, when the network starts. A
 # server without a relay or push has no use for them.
@@ -264,6 +282,8 @@ fi
 [[ "$SERVER" =~ ^[A-Za-z0-9_-]+$ ]] || die "SERVER: letters, digits, - and _ only"
 [[ "$NETWORK" =~ ^[A-Za-z0-9_-]+$ ]] || die "NETWORK: letters, digits, - and _ only"
 [[ "$REGION" =~ ^[A-Za-z0-9_-]+$ ]] || die "REGION: letters, digits, - and _ only"
+case "$PUSH_GATEWAY" in veydan|off) ;; *) die "PUSH_GATEWAY is veydan or off" ;; esac
+case "$MEDIA_UPLOAD_KEY" in required|open) ;; *) die "MEDIA_UPLOAD_KEY is required or open" ;; esac
 RELAY_RETENTION_DAYS=${RELAY_RETENTION_DAYS:-90}
 days_re='^[0-9]{1,4}$'
 [[ "$RELAY_RETENTION_DAYS" =~ $days_re ]] || die "RELAY_RETENTION_DAYS: a number of days, 0 to keep for ever"
@@ -435,7 +455,7 @@ fi
 sites_wanted && say "network $NETWORK ($BASE_DOMAIN): relays $MESH_RELAY_FQDNS| media $MESH_MEDIA_FQDNS"
 say "this server: $SERVER, region $REGION, components: $COMPONENTS"
 [ -n "$ALIAS_HOSTS" ] && say "also answers as: $ALIAS_HOSTS(certificates once their DNS points here)"
-has relay && say "relay  wss://$RELAY_FQDN  peers: ${PEERS:-none}"
+has relay && say "relay  wss://$RELAY_FQDN  peers: ${PEERS:-none}  push of the Veydan network: $PUSH_GATEWAY"
 if has media; then
     if [ -n "$S3_ENDPOINT" ]; then
         say "media  https://$MEDIA_FQDN  (files in the bucket $S3_BUCKET at $S3_ENDPOINT, index here)"

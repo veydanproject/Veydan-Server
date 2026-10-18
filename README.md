@@ -126,6 +126,11 @@ Push to the official Veydan apps cannot come from a self-hosted server: their pu
 Your server serves apps built with your own key.
 Bridges (VLink) and Veydan Cloud do not work with own servers.
 
+The installer of a server with a relay asks whether to wake phones through the push of the Veydan network (`PUSH_GATEWAY=veydan`) or not (`off`, the default, and what `--yes` keeps).
+That push learns only the token of a device and the time, never who writes to whom.
+For now the answer is only stored and put on the card of the server (`p=`).
+Change it later with `veydan-server push veydan` or `veydan-server push off`; a rerun keeps the saved value.
+
 ## A bridge
 
 A bridge (VLink) is a door into the Veydan network for people whose direct way to it is closed.
@@ -208,6 +213,17 @@ Port 3478 (udp and tcp, STUN/TURN) is fixed.
 Open all of these ports in the firewall of your provider.
 The node's key and TURN secret are in `/opt/vcall/data/`. The key is the node's id: keep it.
 
+## The card of the server
+
+`veydan-server card` prints one link that adds this server to the app: its relay, the app key, the media server and the call node it has, the push setting and the name of the network.
+The installer prints the same link at the end ("Link for the app").
+The link holds the app key: give it to the people who may use the server, and to nobody else.
+
+    veydan://server/<id>?u=<relay>&k=<app key>[&m=<media>][&c=<call node>]&p=veydan|off&n=<network>
+
+`<id>` is the first 16 hex digits of the sha256 of the relay address, so the app knows the server again from any card of it.
+`veydan-server card --contact <npub>` prints a link to a contact that carries the server along (`veydan://contact/<npub>?srv=…`), for a person who has no server of the network yet.
+
 ## Where things live
 
 | Component | Path | Kept on a rerun (a changed template is put beside it as `*.new`) | Rewritten on every run |
@@ -231,7 +247,7 @@ How the programs arrive:
 - Deno and sqld are downloaded from their GitHub releases and checked by sha256 from `versions.conf`.
 - blossom-server is cloned at a pinned commit.
 - VPush and the call node come as binaries in the kit, or from their releases on GitHub (the versions in `versions.conf`, checked by the `SHA256SUMS` of the release and by the signature of the Veydan Project, `<file>.sig`) when the kit brings none. x86_64 only.
-- vguard, the read policy of the relay, comes the same way: `bin/vguard` of the kit (`make build-deploy` builds it with VPush), or the release of Veydan-Push named by `VGUARD_VERSION`. Without either the relay is put up without it: nginx sends the relay straight to strfry, and the installer warns.
+- vguard, the read policy of the relay, comes the same way: `bin/vguard` of the kit (`make build-deploy` builds it with VPush), or the release of Veydan-Push named by `VGUARD_VERSION` (`vguard-linux-<arch>` with its signature). A relay is never put up without it: when neither is there and none is installed, the installer stops before it changes anything and names `VGUARD_VERSION`.
 
 ## Cloudflare
 
@@ -278,8 +294,9 @@ Last test: publish an event on one relay and read it from another; upload a file
 
 - There is no uninstall. A component removed from `COMPONENTS` is not removed from the server.
 - The database of a relay does not shrink when the retention timer deletes old events: the file keeps its size and the freed pages are used again. Watch the disk (`df -h /opt/strfry`) until the first week has passed.
-- Anyone with a nostr key can upload to blossom. Nginx limits the request rate, and a request to 20 MiB.
-- The app key is inside the app, so anyone who has the app can query a relay with it. Message content stays encrypted. vguard gives gift wraps (kind 1059) only to the key that signed in (NIP-42) and events of groups (kind 9) only by `#h`; what else is on a relay (profiles, follow and relay lists) is public, as on any relay. A relay without vguard gives everything to the app key, metadata included.
+- `MEDIA_UPLOAD_KEY=required` (the default of a new install) turns the check below on; `open` turns it off, and a server installed before the setting existed stays `open`. The network of Veydan keeps uploads open until the apps carry the key.
+- Media takes an upload (`PUT` and `HEAD` of `/upload`, `/mirror`, `DELETE` of a blob) only with the key of the server, as the relay does: `?key=` or the header `X-API-Key`, the app key or the peer key (the other media servers). Without it nginx answers 401. The app takes the key from the card of the server. Downloads and the list stay open. The key is inside the app, so this keeps strangers off, not people who have the app; an upload is still signed by the nostr key of its author. Nginx limits the request rate, and a request to 20 MiB.
+- The app key is inside the app, so anyone who has the app can query a relay with it. Message content stays encrypted. vguard gives gift wraps (kind 1059) only to the key that signed in (NIP-42) and events of groups (kind 9) only by `#h`; what else is on a relay (profiles, follow and relay lists) is public, as on any relay. A relay without vguard would give everything to the app key, metadata included: the kit puts up no relay without it.
 - The strfry router does not check the TLS certificate of the other relay and writes its URL, with the peer key, to the journal. Keep the path between your servers trusted.
 - The media index is per server. Without a shared bucket, a file is lost for the network if its server is gone.
 

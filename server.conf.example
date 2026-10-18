@@ -81,6 +81,16 @@ VPUSH_ALIASES=""
 # its first "-" (eu-2 → eu).
 REGION=
 
+# Wake phones through the push of the Veydan network: veydan, or off. It
+# learns the token of a device and the time, never who writes to whom.
+# Change later with: veydan-server push veydan|off
+PUSH_GATEWAY=off
+
+# Media takes an upload only with the key of the server (?key= or X-API-Key):
+# required, or open. Not asked. A server installed before this setting keeps
+# open until it is set.
+MEDIA_UPLOAD_KEY=required
+
 # NIP-11 name of the relay. Empty: "<NETWORK> <relay name>".
 RELAY_NAME=
 

@@ -45,6 +45,8 @@ release_component() {
     case "$1" in
         vlink) echo link ;;
         vcall) echo call ;;
+        vpush) echo vpush ;;
+        vguard) echo vguard ;;   # in the release of Veydan-Push, signed apart from vpush
         *) echo "$1" ;;
     esac
 }
