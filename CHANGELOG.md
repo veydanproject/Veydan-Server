@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5
+
+The node of calls is VCall 0.1.1: it names the registry of the Veydan network by its own address; nothing of the node or of its protocol changed.
+
 ## 0.1.4
 
 The installer checks the owner's signature of what it downloads: the kit (`<kit>.sig` beside its archive) and every program taken from a release (`<file>.sig`), against the release key it carries; a file without a signature or with a wrong one is not installed.

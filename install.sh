@@ -15,7 +15,7 @@
 # answers; what is not in them is asked.
 set -euo pipefail
 
-KIT_VERSION=0.1.4
+KIT_VERSION=0.1.5
 RELEASES=https://github.com/veydanproject/Veydan-Server/releases/download
 KITS=/opt/veydan/kit
 
