@@ -1,0 +1,10 @@
+[Unit]
+Description=strfry: delete what is past its time, once a day
+
+[Timer]
+OnCalendar=*-*-* 04:20:00
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

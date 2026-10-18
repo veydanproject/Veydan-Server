@@ -1,5 +1,6 @@
 // A blob this media server has not got is read from the bucket of the
-// network by its hash. The bucket stays private: nginx signs each GET with
+// network by its hash. The bucket stays private: nginx signs each GET and HEAD
+// (with its own method: a HEAD signed as a GET is refused with 403) with
 // the keys of the server (AWS Signature V4). For nginx's njs module.
 //
 // Variables the site sets: $s3_key, $s3_secret, $s3_region, $s3_host (the
@@ -25,12 +26,16 @@ function date(r) {
     return stamp(r);
 }
 
+function method(r) {
+    return r.method === 'HEAD' ? 'HEAD' : 'GET';
+}
+
 function authorization(r) {
     var ts = stamp(r);
     var day = ts.substring(0, 8);
     var region = r.variables.s3_region;
     var scope = day + '/' + region + '/s3/aws4_request';
-    var canonical = ['GET', r.variables.s3_path, '',
+    var canonical = [method(r), r.variables.s3_path, '',
         'host:' + r.variables.s3_host,
         'x-amz-content-sha256:' + EMPTY_SHA256,
         'x-amz-date:' + ts,

@@ -34,6 +34,29 @@ The same card is saved in `/opt/veydan/server.txt` (root only).
 
 To use the server in the app: Settings → Servers → Own servers → add the relay with its key, as the card says.
 
+### What the installer checks
+
+`install.sh` is small: it downloads the kit of its version (`veydan-server-<version>.tar.gz`) from the release of that version and runs it.
+Before it unpacks anything, it checks the kit twice: against `SHA256SUMS` of the release (a broken download), and against the signature of the Veydan Project, `veydan-server-<version>.tar.gz.sig` beside it.
+The signature is made offline, with a key that never sits on GitHub or on a server, so a release changed on GitHub does not install: a kit without its `.sig`, or with one the key did not make over that very file, is refused and nothing is unpacked.
+The programs it fetches later (the bridge, the call node, VPush) are checked the same way, each by its own `.sig`.
+It needs `openssl` (Debian has it with `ca-certificates`).
+
+The key is in `install.sh` and `lib/release.sh`, as `RELEASE_PUBKEY` (Ed25519, hex):
+
+```
+a809a6cf0b1ad6759ce497d75a9d1822ccc0cc68fb075e642ca95f33df2f3946
+```
+
+To check a kit by hand:
+
+```sh
+. lib/release.sh   # in a checkout of this repository
+release_verify veydan-server-<version>.tar.gz server <version> veydan-server-<version>.tar.gz.sig && echo signed
+```
+
+The signature covers what the installer downloads, not the installer itself: if you do not trust the copy of `install.sh` you got, compare its `RELEASE_PUBKEY` with the one above.
+
 ## Without questions
 
 Copy `server.conf.example` to `server.conf`, edit it, put it beside `install.sh`, and run:
@@ -67,6 +90,7 @@ The main settings (all are described in `server.conf.example`):
 | `FIREWALL` | `ufw` opens ssh, 80 and 443 and closes the rest; `none` leaves the firewall alone. |
 | `ADMIN_PUBKEY` | Your nostr key, shown in the relay's NIP-11 document. May be empty. |
 | `RELAY_NAME` | NIP-11 name of the relay. |
+| `RELAY_RETENTION_DAYS` | Days the relay keeps messages (gift wraps) and group events; a daily timer deletes older ones. `90` by default, `0` keeps for ever. |
 | `SKIP_DNS_CHECK` | `1`: do not compare DNS with this server's addresses (behind NAT). |
 
 ## Several servers
@@ -86,7 +110,9 @@ After the installer, `veydan-server` is on the server: `show` (the card), `join-
 - Every relay connects to every other relay and syncs with it every few minutes. An event published on one relay reaches all of them.
 - With an S3 bucket, every media server serves every file. A server that has not got a file asks the bucket by its hash, with a signed request.
 - With files on disks, each server serves what it took. For the rest it asks the next media server of `MESH_MEDIA`.
+- A relay reaches the others through a local upstream of its own nginx (`127.0.0.1:7780`, `/opt/veydan/nginx/15-relay-peers.conf`, 0600 root): nginx checks the certificate of the peer and sends the peer key as a header, so the key is in no URL, argv or journal line of strfry. With `TLS=selfsigned` the certificate of a peer cannot be checked: the upstream does not check it and says so in its first line (tests only).
 - The app key (in the manifest of every relay) and the peer key (relay to relay, push to relay) must differ.
+- The peer key is also what makes a peer to the read policy of the relay (vguard, below): a connection with it reads everything, a connection with the app key only what its NIP-42 key may.
 - `MESH_ORIGINS="name=ipv4 ..."` lets the servers talk to each other by real addresses, past a CDN.
 
 ## Push
@@ -119,7 +145,7 @@ docker run -d --name vlink --restart=unless-stopped --network=host -v vlink:/dat
 ```
 
 The installer asks two things: the port (Enter keeps 443) and whether the bridge is open to anybody or private.
-It downloads the program of the pinned version from its release (x86_64 or aarch64, checked against `SHA256SUMS`), starts it, opens the port in `ufw`, and prints the bridge's reference and its link:
+It downloads the program of the pinned version from its release (x86_64 or aarch64, checked against `SHA256SUMS` and the signature of the Veydan Project), starts it, opens the port in `ufw`, and prints the bridge's reference and its link:
 
 ```
 Bridge  203.0.113.7:443#300d0089…
@@ -187,21 +213,25 @@ The node's key and TURN secret are in `/opt/vcall/data/`. The key is the node's 
 | Component | Path | Kept on a rerun (a changed template is put beside it as `*.new`) | Rewritten on every run |
 |---|---|---|---|
 | Relay | `/opt/strfry` | `etc/strfry.conf`; the database | the systemd units, the router and sync settings |
-| Media | `/opt/blossom` | `etc/config.yml` | the units; `etc/blossom.env` (S3 keys) |
+| Relay: read policy | `/opt/vguard` | your lines outside the kit block of `etc/vguard.toml` | the kit block of `vguard.toml`, the unit |
+| Media | `/opt/blossom` | `etc/config.yml` (its rules come from `etc/rules.yml` when there is one) | the units; `etc/blossom.env` (S3 keys) |
 | Media index | `/opt/libsql` | the data in `data/` | the unit |
 | Push | `/opt/vpush` | your lines outside the kit block of `etc/vpush.toml`; `etc/secrets/` | the kit block of `vpush.toml`, the unit |
 | Calls | `/opt/vcall` | `etc/vcall.env`; `data/` | the unit |
 | Installer | `/opt/veydan` | `server.conf` | `server.txt`, the nginx files in `nginx/` |
 
 Media files are kept 14 days since the last download, then removed.
-This is set in `/opt/blossom/etc/config.yml`.
+This is set in `/opt/blossom/etc/config.yml`, by the rules under `storage:`; the last rule is for everyone.
+A server run by Veydan Cloud keeps the files of paid accounts longer: its agent lays the rules of the plans in `/opt/blossom/etc/rules.yml`, puts them into `config.yml` and restarts blossom, and a rerun of the installer renders the same rules from that file.
+The file is the agent's: an edit of it, or of the rules in `config.yml`, is replaced within the hour.
 
 How the programs arrive:
 
 - strfry is compiled on the server when the kit brings no binary. This takes 5-10 minutes on a small server. A swap file is added if memory is short, and removed after the build. The commit is checked against `versions.conf`.
 - Deno and sqld are downloaded from their GitHub releases and checked by sha256 from `versions.conf`.
 - blossom-server is cloned at a pinned commit.
-- VPush and the call node come as binaries in the kit, or from their releases on GitHub (the versions in `versions.conf`, checked by the `SHA256SUMS` of the release) when the kit brings none. x86_64 only.
+- VPush and the call node come as binaries in the kit, or from their releases on GitHub (the versions in `versions.conf`, checked by the `SHA256SUMS` of the release and by the signature of the Veydan Project, `<file>.sig`) when the kit brings none. x86_64 only.
+- vguard, the read policy of the relay, comes the same way: `bin/vguard` of the kit (`make build-deploy` builds it with VPush), or the release of Veydan-Push named by `VGUARD_VERSION`. Without either the relay is put up without it: nginx sends the relay straight to strfry, and the installer warns.
 
 ## Cloudflare
 
@@ -222,7 +252,7 @@ If you use `MESH_ORIGINS`, servers of your network talk to each other past Cloud
 ## Updates
 
 - strfry, blossom-server, Deno, sqld: change the version (and sha256) in `versions.conf`, then run `install.sh` again.
-- VPush and the call node: `install -m755 <new binary> /opt/<app>/bin/<app> && systemctl restart <app>` (the app is `vpush` or `vcall`).
+- VPush, vguard and the call node: `install -m755 <new binary> /opt/<app>/bin/<app> && systemctl restart <app>` (the app is `vpush`, `vguard` or `vcall`).
 
 ## Checks
 
@@ -232,19 +262,24 @@ curl -s -o /dev/null -w '%{http_code}\n' -H 'Accept: application/nostr+json' htt
 curl -s -H 'Accept: application/nostr+json' "https://relay.example.org/?key=$K"                                     # NIP-11
 curl -s -o /dev/null -w '%{http_code}\n' https://media.example.org/                                                 # 404
 curl -s https://push.example.org/healthz
-systemctl status strfry blossom vpush
+systemctl status strfry vguard blossom vpush
 journalctl -u strfry-router -n 20
+journalctl -u vguard -n 20          # the counters: questions passed, refused and why
 ```
+
+The read policy: with the app key, a REQ for gift wraps without `#p` of the key you signed in with is answered `CLOSED` with `restricted:`, and nothing reaches strfry (`websocat "wss://relay.example.org/?key=$K"`, then `["REQ","x",{"kinds":[1059]}]`).
 
 The router log shows "Connected to" for each other relay.
 Sync timer: `systemctl list-timers strfry-sync.timer`.
+Retention timer: `systemctl list-timers strfry-retention.timer`; what it deleted: `journalctl -u strfry-retention`.
 Last test: publish an event on one relay and read it from another; upload a file through one media server and download it through another.
 
 ## Limits
 
 - There is no uninstall. A component removed from `COMPONENTS` is not removed from the server.
+- The database of a relay does not shrink when the retention timer deletes old events: the file keeps its size and the freed pages are used again. Watch the disk (`df -h /opt/strfry`) until the first week has passed.
 - Anyone with a nostr key can upload to blossom. Nginx limits the request rate, and a request to 20 MiB.
-- The app key is inside the app, so anyone who has the app can query a relay with it. Message content stays encrypted, but metadata can be read.
+- The app key is inside the app, so anyone who has the app can query a relay with it. Message content stays encrypted. vguard gives gift wraps (kind 1059) only to the key that signed in (NIP-42) and events of groups (kind 9) only by `#h`; what else is on a relay (profiles, follow and relay lists) is public, as on any relay. A relay without vguard gives everything to the app key, metadata included.
 - The strfry router does not check the TLS certificate of the other relay and writes its URL, with the peer key, to the journal. Keep the path between your servers trusted.
 - The media index is per server. Without a shared bucket, a file is lost for the network if its server is gone.
 

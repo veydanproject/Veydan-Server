@@ -29,6 +29,10 @@ level = "info"
 #relay = "debug"
 #nostr_sdk = "warn"
 
+# The keys denied on every server of the network (laid by the agent of
+# vcloud) are read from denied-keys.txt beside the database; another file
+# is named at the top of this file: denied_keys_file = "/…". No file,
+# nobody denied.
 [store]
 path = "/opt/vpush/data/vpush.db"
 

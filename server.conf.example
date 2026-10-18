@@ -84,6 +84,11 @@ REGION=
 # NIP-11 name of the relay. Empty: "<NETWORK> <relay name>".
 RELAY_NAME=
 
+# Days the relay keeps gift wraps (kind 1059, the messages) and events of
+# groups (kind 9); a timer deletes older ones once a day. Other kinds stay.
+# 0: keep for ever (the database grows without end). At least 7 otherwise.
+RELAY_RETENTION_DAYS=90
+
 # 1: do not compare the DNS of every name with this server's addresses
 # (behind NAT, or a provider that gives the public address elsewhere).
 SKIP_DNS_CHECK=0

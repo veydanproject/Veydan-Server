@@ -138,7 +138,8 @@ secret() { openssl rand -hex 32; }
 # fetch_program <program> <repo> <version> <dest>
 #
 # A program of the Veydan Project from its release on GitHub, for this
-# machine (x86_64 or aarch64), checked against the SHA256SUMS of the
+# machine (x86_64 or aarch64), checked against the SHA256SUMS and the
+# owner's signature (<file>.sig, lib/release.sh) of the
 # release; the kit of a checkout or of make server brings them in bin/
 # instead. Nothing on a dry run.
 # Whether the release <version> of a program must be fetched to <dest>:
@@ -165,6 +166,12 @@ fetch_program() {
     curl -fsSL -o "$tmp/$prog-linux-$arch" "$base/$prog-linux-$arch" || die "$prog $version: could not download $base/$prog-linux-$arch"
     curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || die "$prog $version: could not download $base/SHA256SUMS"
     ( cd "$tmp" && grep " $prog-linux-$arch\$" SHA256SUMS | sha256sum -c --quiet - ) || die "$prog $version: $prog-linux-$arch does not match SHA256SUMS"
+    # The owner's signature, not the sums of the same release, says the
+    # program is ours (lib/release.sh).
+    curl -fsSL -o "$tmp/$prog-linux-$arch.sig" "$base/$prog-linux-$arch.sig" \
+        || die "$prog $version: the release has no signature ($prog-linux-$arch.sig); nothing is installed unsigned"
+    release_verify "$tmp/$prog-linux-$arch" "$(release_component "$prog")" "$version" "$tmp/$prog-linux-$arch.sig" \
+        || die "$prog $version: $prog-linux-$arch is not signed by the release key of the Veydan Project"
     install -m 0755 "$tmp/$prog-linux-$arch" "$dest"
     rm -rf "$tmp"
     say "$prog: $version from the release of $repo"

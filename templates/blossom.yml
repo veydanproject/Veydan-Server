@@ -44,12 +44,16 @@ storage:
   #
   # The rules are also the upload allowlist, and an empty list refuses
   # everything (the docs say otherwise, the code at 32567afb does this), so
-  # there is one rule for any type. Paid storage later: a rule with
-  # `pubkeys:` above this one, with a longer expiration.
+  # the last rule is one for any type and any key: the free retention.
+  # Rules with `pubkeys:` above it keep the files of those keys longer (the
+  # first rule that names an owner of a file governs it, so the longest
+  # comes first); an upload by any other key passes over them. Where the
+  # server is run by Veydan Cloud, its agent lays them in rules.yml beside
+  # this file and puts them here, by the plans; a rerun of the installer
+  # renders rules.yml here too. Without rules.yml: the catch-all alone.
   removeWhenNoOwners: false
   rules:
-    - type: "*"
-      expiration: 14 days
+${V_STORAGE_RULES}
 
 upload:
   enabled: true

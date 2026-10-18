@@ -9,6 +9,9 @@
 N=$STATE/nginx
 V_ACME=$STATE/acme
 ACME=$STATE/acme
+# Where the WebSockets of the relay go: vguard when components/guard.sh
+# put it up, else strfry.
+V_RELAY_WS=${V_RELAY_WS:-127.0.0.1:7777}
 say "nginx: $HOSTS"
 
 # nginx workers (www-data) pass through /opt/veydan to the ACME directory
@@ -61,7 +64,8 @@ rm -f "$cf"
 [ -f "$(target "$N/10-relay-key.conf")" ] && run rm -f "$N/10-relay-key.conf"
 
 # The keys nginx compares, from server.conf. The relay takes the app key
-# (what the app sends) or the peer key (the other relays, vpush).
+# (what the app sends) or the peer key (the other relays, vpush); with the
+# peer key it is a peer to vguard.
 cat <<EOF | put "$N/10-keys.conf" 0600 root:root
 # Keys of the network (server.conf). Made by run.sh.
 map \$arg_key \$veydan_key_query {
@@ -77,6 +81,21 @@ map \$http_x_api_key \$veydan_key_header {
 map "\$veydan_key_query\$veydan_key_header" \$veydan_relay_denied {
     "00"    1;
     default 0;
+}
+# The peer key, alone: the other relays and vpush. The relay tells vguard
+# (X-Veydan-Role) that such a connection reads everything; with the app
+# key the read policy holds. Empty: no header at all.
+map \$arg_key \$veydan_peer_query {
+    default 0;
+    "$MESH_PEER_KEY" 1;
+}
+map \$http_x_api_key \$veydan_peer_header {
+    default 0;
+    "$MESH_PEER_KEY" 1;
+}
+map "\$veydan_peer_query\$veydan_peer_header" \$veydan_relay_role {
+    "00"    "";
+    default peer;
 }
 EOF
 

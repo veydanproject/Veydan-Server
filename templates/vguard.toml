@@ -1,0 +1,35 @@
+# vguard of the relay ${V_RELAY_FQDN}: the read policy between nginx and
+# strfry (VGuard of Veydan-Push, its spec/vguard.md). The kit's block is
+# written anew on every run; what is below it is yours.
+# Apply: systemctl restart vguard
+
+# --- kit begin: the addresses and the names of the relay (server.conf).
+listen = "127.0.0.1:7778"
+upstream = "127.0.0.1:7777"
+# The relay tag of an AUTH must name one of these.
+relay_hosts = [${V_GUARD_HOSTS}]
+# The keys denied on every server of the network, and the groups closed on
+# our relays, laid by the agent of vcloud; read again when they change. No
+# file, nobody denied.
+${V_GUARD_DENIED}
+${V_GUARD_DENIED_GROUPS}
+# --- kit end
+
+# Limits; the defaults follow strfry.conf (maxWebsocketPayloadSize,
+# maxSubsPerConnection, maxReqFilterSize) and nginx (proxy_read_timeout).
+[limits]
+#max_frame = 262144
+#max_subs = 200
+#max_filters = 200
+#max_connections = 20000
+#idle_secs = 300
+# How far the clock of a phone may be off and it still signs in (3 days),
+# and how long a question before the AUTH waits for it, milliseconds.
+#auth_skew_secs = 259200
+#auth_wait_ms = 5000
+
+[log]
+#level = "info"
+# The counters (connections, questions refused and why) go to the journal
+# this often, seconds.
+metrics_secs = 300

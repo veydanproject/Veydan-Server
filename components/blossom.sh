@@ -2,6 +2,8 @@
 # blossom-server (hzrd149) on Deno 2. Everything in /opt/blossom:
 #   deno/deno  app/ (the server, read-only)  cache/ (DENO_DIR)
 #   etc/config.yml  etc/blossom.env (S3 keys, index token)  etc/blossom.service
+#   etc/rules.yml (the retention by plans, when the agent of Veydan Cloud
+#   lays it; see the rules below)
 #   data/ (upload buffer; local blobs when there is no S3)
 # Listens on 127.0.0.1:3000; only nginx is in front of it. Files go to the
 # bucket of the network (or this disk); the index of what this server
@@ -78,6 +80,17 @@ V_BLOSSOM_CONFIG=$B/etc/config.yml
 V_S3_ENDPOINT=${S3_ENDPOINT:-https://s3.example.org}
 V_S3_BUCKET=${S3_BUCKET:-media}
 V_S3_REGION=${S3_REGION:-auto}
+# The retention rules (templates/blossom.yml, under storage:): those the
+# agent of Veydan Cloud laid in etc/rules.yml, which it also splices into
+# config.yml itself, or the free retention alone. Indented by four spaces,
+# as the agent indents them, so a rerun renders the very file it made and
+# no config.yml.new is left for nothing.
+if [ -s "$(target "$B/etc/rules.yml")" ]; then
+    V_STORAGE_RULES=$(sed 's/^/    /' "$(target "$B/etc/rules.yml")")
+else
+    V_STORAGE_RULES='    - type: "*"
+      expiration: 14 days'
+fi
 render "$HERE/templates/blossom.yml" "$B/etc/config.yml" 0640 root:blossom keep "# blossom-server of " "publicDomain: "
 
 # The secrets config.yml reads from the environment. From server.conf, so

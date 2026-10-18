@@ -31,6 +31,8 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib/common.sh
 . "$HERE/lib/common.sh"
+# shellcheck source=lib/release.sh
+. "$HERE/lib/release.sh"
 # shellcheck source=versions.conf
 . "$HERE/versions.conf"
 
@@ -68,7 +70,9 @@ fi
 . "$HERE/lib/ask.sh"
 
 if [ "$DRY" = 1 ]; then
-    DRY_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/veydan-dry.XXXXXX")
+    # A DRY_ROOT given stays (a test lays files there first, as a server
+    # would have them).
+    DRY_ROOT=${DRY_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/veydan-dry.XXXXXX")}
     say "dry run: nothing is changed, files go under $DRY_ROOT"
     # A real run installs these itself; a dry run installs nothing.
     for t in envsubst jq openssl; do
@@ -93,6 +97,7 @@ S3_ENDPOINT="" S3_BUCKET="" S3_REGION="" S3_ACCESS_KEY="" S3_SECRET_KEY=""
 TLS=letsencrypt ACME_EMAIL="" FIREWALL=ufw ADMIN_PUBKEY="" VLINK_REGISTRY_HOST=""
 SERVER="" COMPONENTS="" RELAY_HOST="" MEDIA_HOST="" VPUSH_HOST="" REGION="" RELAY_NAME="" SKIP_DNS_CHECK=0 FCM_APPS=""
 RELAY_ALIASES="" MEDIA_ALIASES="" VPUSH_ALIASES=""
+RELAY_RETENTION_DAYS=90
 CALL_PUBLIC_IP="" CALL_PORT=8443 CALL_SFU_PORT=3479 CALL_RELAY_PORTS=49152-49999 CALL_REGISTRY_URL=""
 # Of older installs; read and set aside.
 MEDIA_INDEX_HOST="" MESH_INDEX_TOKEN="" MEDIA_MODE=""
@@ -172,6 +177,7 @@ if [ -n "$JOIN" ]; then
 fi
 
 for c in $COMPONENTS; do
+    [ "$c" != guard ] || die "guard is part of the relay (components/guard.sh), not a component of its own"
     [ -f "$HERE/components/$c.sh" ] || [ "$c" = relay ] || [ "$c" = media ] || die "unknown component: $c"
 done
 if [ -z "$BASE_DOMAIN" ] && sites_wanted; then
@@ -258,6 +264,13 @@ fi
 [[ "$SERVER" =~ ^[A-Za-z0-9_-]+$ ]] || die "SERVER: letters, digits, - and _ only"
 [[ "$NETWORK" =~ ^[A-Za-z0-9_-]+$ ]] || die "NETWORK: letters, digits, - and _ only"
 [[ "$REGION" =~ ^[A-Za-z0-9_-]+$ ]] || die "REGION: letters, digits, - and _ only"
+RELAY_RETENTION_DAYS=${RELAY_RETENTION_DAYS:-90}
+days_re='^[0-9]{1,4}$'
+[[ "$RELAY_RETENTION_DAYS" =~ $days_re ]] || die "RELAY_RETENTION_DAYS: a number of days, 0 to keep for ever"
+RELAY_RETENTION_DAYS=$((10#$RELAY_RETENTION_DAYS))
+if [ "$RELAY_RETENTION_DAYS" -gt 0 ] && [ "$RELAY_RETENTION_DAYS" -lt 7 ]; then
+    die "RELAY_RETENTION_DAYS: below 7 a phone that was off for a week would miss its messages; 0 keeps for ever"
+fi
 for k in $(sites_wanted && echo MESH_APP_KEY MESH_PEER_KEY); do
     [[ "${!k}" =~ ^[A-Za-z0-9._~-]{32,}$ ]] || die "server.conf: $k is odd (letters, digits, ._~- only, 32 or more)"
 done
@@ -446,6 +459,8 @@ fi
 . "$HERE/components/base.sh"
 # shellcheck source=components/strfry.sh
 has relay && . "$HERE/components/strfry.sh"
+# shellcheck source=components/guard.sh
+has relay && . "$HERE/components/guard.sh"
 # shellcheck source=components/libsql.sh
 has media && . "$HERE/components/libsql.sh"
 # shellcheck source=components/blossom.sh
@@ -455,7 +470,7 @@ has vpush && . "$HERE/components/vpush.sh"
 # shellcheck source=components/call.sh
 has call && . "$HERE/components/call.sh"
 # The media site renders these; the private components fill them.
-V_VAULT_LOCATION="" V_MEDIA_AUTH_LOCATION="" V_CLOUD_LOCATION="" V_MANIFEST_LOCATION=""
+V_VAULT_LOCATION="" V_MEDIA_AUTH_LOCATION="" V_MEDIA_ROOT_GUARD="" V_CLOUD_LOCATION="" V_MANIFEST_LOCATION=""
 for c in $COMPONENTS; do
     case "$c" in relay|media|vpush|call|agent) continue ;; esac
     # shellcheck disable=SC1090

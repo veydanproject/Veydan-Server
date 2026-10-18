@@ -4,9 +4,10 @@
 # in /opt/strfry:
 #   bin/strfry  bin/sync-peers.sh  etc/strfry.conf  etc/router.conf
 #   etc/peers  etc/*.service  etc/*.timer  data/  src/ (only when built here)
-# Listens on 127.0.0.1:7777; only nginx is in front of it. Talks to the
-# other relays of the mesh itself: router (live, both ways) and a sync
-# timer (negentropy, closes the gaps after a lost connection).
+# Listens on 127.0.0.1:7777; nginx and vguard (guard.sh, the read policy)
+# are in front of it. Talks to the other relays of the mesh itself: router
+# (live, both ways) and a sync timer (negentropy, closes the gaps after a
+# lost connection).
 # Sourced by run.sh.
 
 S=/opt/strfry
@@ -103,13 +104,30 @@ V_ADMIN_PUBKEY=$ADMIN_PUBKEY
 render "$HERE/templates/strfry.conf" "$S/etc/strfry.conf" 0640 root:strfry keep "## strfry of the " "        name = "
 render "$HERE/templates/systemd/strfry.service" "$S/etc/strfry.service" 0644 root:root
 
-# The peers: one URL per line, with the peer key, readable by strfry only.
-# Both the router and the sync timer read this file.
+# The peers: one URL per line, read by both the router and the sync timer.
+# The URL is a local upstream of nginx (templates/nginx/relay-peers.conf):
+# nginx checks the certificate of the peer and adds the peer key, so the
+# key is in no URL, argv or journal line of strfry.
+peer_url() { printf 'ws://127.0.0.1:7780/peer/%s/' "$1"; }
 {
-    for p in $PEERS; do echo "wss://$p/?key=$MESH_PEER_KEY"; done
+    for p in $PEERS; do peer_url "$p"; echo; done
 } | put "$S/etc/peers" 0640 root:strfry
 
 if [ -n "$PEERS" ]; then
+    # With TLS=selfsigned the certificate of a peer cannot be checked
+    # (tests only); the file says so.
+    V_PEER_VERIFY=on V_PEER_TLS_NOTE=""
+    if [ "$TLS" = selfsigned ]; then
+        V_PEER_VERIFY=off
+        V_PEER_TLS_NOTE="# TLS=selfsigned: the certificates of the peers are NOT checked (tests only)."
+    fi
+    V_PEER_KEY=$MESH_PEER_KEY
+    V_PEER_LOCATIONS=""
+    for p in $PEERS; do
+        V_PEER_FQDN=$p
+        V_PEER_LOCATIONS+="$(render_text "$HERE/templates/nginx/relay-peer-location.conf")"$'\n'
+    done
+    render "$HERE/templates/nginx/relay-peers.conf" "$STATE/nginx/15-relay-peers.conf" 0600 root:root
     {
         echo "# Made by run.sh from MESH_RELAYS in server.conf. Edits here are"
         echo "# lost on the next run. strfry router re-reads this file by itself."
@@ -119,7 +137,7 @@ if [ -n "$PEERS" ]; then
         echo "    mesh {"
         echo "        dir = \"both\""
         echo "        urls = ["
-        for p in $PEERS; do echo "            \"wss://$p/?key=$MESH_PEER_KEY\""; done
+        for p in $PEERS; do echo "            \"$(peer_url "$p")\""; done
         echo "        ]"
         echo "    }"
         echo "}"
@@ -128,6 +146,17 @@ if [ -n "$PEERS" ]; then
     put "$S/bin/sync-peers.sh" 0755 root:root < "$HERE/templates/sync-peers.sh"
     render "$HERE/templates/systemd/strfry-sync.service" "$S/etc/strfry-sync.service" 0644 root:root
     render "$HERE/templates/systemd/strfry-sync.timer" "$S/etc/strfry-sync.timer" 0644 root:root
+fi
+
+# How long gift wraps and events of groups are kept (RELAY_RETENTION_DAYS of
+# server.conf, 0: for ever). The database is not given back to the disk, but
+# it stops growing: the pages of what was deleted are used again.
+if [ "$RELAY_RETENTION_DAYS" -gt 0 ]; then
+    V_RETENTION_DAYS=$RELAY_RETENTION_DAYS
+    V_RETENTION_SECONDS=$((RELAY_RETENTION_DAYS * 86400))
+    render "$HERE/templates/retention.sh" "$S/bin/retention.sh" 0755 root:root
+    render "$HERE/templates/systemd/strfry-retention.service" "$S/etc/strfry-retention.service" 0644 root:root
+    render "$HERE/templates/systemd/strfry-retention.timer" "$S/etc/strfry-retention.timer" 0644 root:root
 fi
 
 link_unit "$S/etc/strfry.service"
@@ -141,5 +170,16 @@ if [ -n "$PEERS" ]; then
 elif [ -f "$(target "$S/etc/strfry-router.service")" ]; then
     # This relay is alone in the mesh now.
     run systemctl disable --now strfry-router strfry-sync.timer
+    run rm -f "$STATE/nginx/15-relay-peers.conf"
     run rm -f "$S/etc/strfry-router.service" "$S/etc/strfry-sync.service" "$S/etc/strfry-sync.timer" "$S/etc/router.conf"
+fi
+
+if [ "$RELAY_RETENTION_DAYS" -gt 0 ]; then
+    link_only "$S/etc/strfry-retention.service"
+    link_unit "$S/etc/strfry-retention.timer"
+    run systemctl restart strfry-retention.timer
+elif [ -f "$(target "$S/etc/strfry-retention.timer")" ]; then
+    # Kept for ever from now on, as asked.
+    run systemctl disable --now strfry-retention.timer
+    run rm -f "$S/etc/strfry-retention.service" "$S/etc/strfry-retention.timer" "$S/bin/retention.sh"
 fi

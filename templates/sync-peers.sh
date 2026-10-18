@@ -9,8 +9,8 @@ while read -r url; do
     [ -n "$url" ] || continue
     if ! timeout 600 /opt/strfry/bin/strfry --config=/opt/strfry/etc/strfry.conf \
             sync "$url" --dir=both > /dev/null 2> /tmp/sync.err; then
-        # The key is in the URL: log the host only.
-        h=${url#*://}; h=${h%%/*}
+        # The URL is a local upstream: log the peer it stands for.
+        h=${url#*/peer/}; h=${h%%/*}
         echo "sync with $h failed: $(tail -n 1 /tmp/sync.err)" >&2
         rc=1
     fi

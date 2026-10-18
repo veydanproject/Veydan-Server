@@ -32,7 +32,7 @@ mkdirp "$STATE/nginx" 0700 root:root
     echo
     echo "# ---- this server"
     for v in SERVER COMPONENTS RELAY_HOST MEDIA_HOST VPUSH_HOST RELAY_ALIASES MEDIA_ALIASES VPUSH_ALIASES \
-             REGION RELAY_NAME SKIP_DNS_CHECK FCM_APPS \
+             REGION RELAY_NAME RELAY_RETENTION_DAYS SKIP_DNS_CHECK FCM_APPS \
              CALL_PUBLIC_IP CALL_PORT CALL_SFU_PORT CALL_RELAY_PORTS CALL_REGISTRY_URL \
              $EXTRA_CONF_VARS; do
         printf '%s=%q\n' "$v" "${!v:-}"
