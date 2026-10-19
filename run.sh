@@ -38,7 +38,7 @@ HERE=$(cd "$(dirname "$0")" && pwd -P)
 # shellcheck source=versions.conf
 . "$HERE/versions.conf"
 
-STATE=/opt/veydan
+STATE=${VEYDAN_STATE:-/opt/veydan}   # VEYDAN_STATE: the tests, as for veydan-server
 FROM=$HERE
 CONF_FILE=""
 ADD=()
@@ -245,8 +245,9 @@ if [ -z "$REGION" ]; then
     [ -z "$ONLY" ] || REGION=default
     [ "$FIRST" = 1 ] && { sites_wanted || has call; } && ask REGION q_region
 fi
-# Whether phones are woken through the push of the Veydan network. Only
-# stored for now (the card says it, p=); `veydan-server push` changes it.
+# Whether phones are woken through the push of the Veydan network: on the
+# card (p=), and, with vpush here, in its config (components/vpush.sh);
+# `veydan-server push` changes it.
 # --yes and a rerun keep what is saved, off at first.
 PUSH_GATEWAY=${PUSH_GATEWAY:-off}
 # Media takes an upload only with the key of the server (a plain setting,
@@ -257,6 +258,24 @@ if [ -z "$MEDIA_UPLOAD_KEY" ]; then
 fi
 if has relay && [ "$FIRST" = 1 ]; then
     ask PUSH_GATEWAY q_push_gateway "veydan off"
+fi
+# A relay woken through the gateway needs a push server of its own to watch
+# it: chosen with the gateway at the first run, vpush comes along, under
+# the name a question would have offered. --yes keeps off, and adds nothing.
+VPUSH_ADDED=""
+if has relay && [ "$FIRST" = 1 ] && [ "$PUSH_GATEWAY" = veydan ] && ! has vpush; then
+    COMPONENTS="$COMPONENTS vpush"
+    [ -n "$VPUSH_HOST" ] || VPUSH_HOST=${SERVER:+$SERVER-}push
+    VPUSH_ADDED=" (vpush added for it)"
+fi
+
+# A relay set to the gateway without vpush (set later by `veydan-server push
+# veydan`, or vpush left out): no phone is woken and the card has no push
+# address. Said at every run.
+VPUSH_NOTE=""
+if has relay && [ "$PUSH_GATEWAY" = veydan ] && ! has vpush; then
+    VPUSH_NOTE=" (no vpush: run veydan-server add vpush)"
+    warn "PUSH_GATEWAY=veydan, but this server has no vpush: no phone is woken, and the card has no push address. Run: veydan-server add vpush"
 fi
 
 # The keys of the network: made once, here, when the network starts. A
@@ -284,6 +303,7 @@ fi
 [[ "$REGION" =~ ^[A-Za-z0-9_-]+$ ]] || die "REGION: letters, digits, - and _ only"
 case "$PUSH_GATEWAY" in veydan|off) ;; *) die "PUSH_GATEWAY is veydan or off" ;; esac
 case "$MEDIA_UPLOAD_KEY" in required|open) ;; *) die "MEDIA_UPLOAD_KEY is required or open" ;; esac
+has media && [ "$MEDIA_UPLOAD_KEY" = open ] && warn "$(msg warn_media_open)"
 RELAY_RETENTION_DAYS=${RELAY_RETENTION_DAYS:-90}
 days_re='^[0-9]{1,4}$'
 [[ "$RELAY_RETENTION_DAYS" =~ $days_re ]] || die "RELAY_RETENTION_DAYS: a number of days, 0 to keep for ever"
@@ -455,7 +475,7 @@ fi
 sites_wanted && say "network $NETWORK ($BASE_DOMAIN): relays $MESH_RELAY_FQDNS| media $MESH_MEDIA_FQDNS"
 say "this server: $SERVER, region $REGION, components: $COMPONENTS"
 [ -n "$ALIAS_HOSTS" ] && say "also answers as: $ALIAS_HOSTS(certificates once their DNS points here)"
-has relay && say "relay  wss://$RELAY_FQDN  peers: ${PEERS:-none}  push of the Veydan network: $PUSH_GATEWAY"
+has relay && say "relay  wss://$RELAY_FQDN  peers: ${PEERS:-none}  push of the Veydan network: $PUSH_GATEWAY$VPUSH_ADDED$VPUSH_NOTE"
 if has media; then
     if [ -n "$S3_ENDPOINT" ]; then
         say "media  https://$MEDIA_FQDN  (files in the bucket $S3_BUCKET at $S3_ENDPOINT, index here)"

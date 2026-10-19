@@ -41,8 +41,10 @@ path = "/opt/vpush/data/vpush.db"
 policy = "allow_list"
 
 # --- kit begin: the apps served (FCM_APPS of server.conf, keys in
-# etc/secrets/) and every relay of the network. Written anew on every run.
-${V_APPS}${V_RELAYS_ALLOW}
+# etc/secrets/), the gateway the phones are woken through with
+# PUSH_GATEWAY=veydan (its key made by vpush in data/gateway.key), and every
+# relay of the network. Written anew on every run.
+${V_APPS}${V_GATEWAY}${V_RELAYS_ALLOW}
 # --- kit end
 
 [limits]

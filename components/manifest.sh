@@ -91,7 +91,10 @@ card() {
     has relay && echo "$(msg card_app)"
     [ -z "$CARD_LINK" ] || echo "$(msg card_link): $CARD_LINK"
     has media && echo "$(msg card_media_key)"
-    has vpush && echo "$(msg card_push_note)"
+    if has vpush; then
+        # Woken through the gateway, or with the keys of FCM of its own apps.
+        if [ "${PUSH_GATEWAY:-off}" = veydan ]; then echo "$(msg card_push_note_gateway)"; else echo "$(msg card_push_note)"; fi
+    fi
     sites_wanted && echo "$(msg card_next)"
     echo "$(msg card_file)"
 }

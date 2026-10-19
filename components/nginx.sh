@@ -63,17 +63,25 @@ rm -f "$cf"
 # An older install kept the relay key here.
 [ -f "$(target "$N/10-relay-key.conf")" ] && run rm -f "$N/10-relay-key.conf"
 
-# Media: with MEDIA_UPLOAD_KEY=required a write (upload, mirror, delete of a
-# blob) needs one of the two keys too (the peer key is for the other media
-# servers); a download and the list stay open. With "open" (a network whose
-# apps do not carry the key yet) neither the map nor the guards exist.
+# Media: with MEDIA_UPLOAD_KEY=required everything needs one of the two keys
+# (the peer key is for the other media servers) EXCEPT a download of a blob by
+# its hash, the list of a key, the index and the CORS preflight. It fails
+# closed: blossom matches its routes without regard to case, so a list of
+# writes to deny (PUT /UPLOAD) would be bypassed. The method is matched
+# case-sensitively, the hash and the extension in both cases. With "open" (a
+# network whose apps do not carry the key yet) neither the map nor the guards
+# exist.
 MEDIA_KEY_MAP="" V_MEDIA_KEY_GUARD=""
 if [ "$MEDIA_UPLOAD_KEY" = required ]; then
     MEDIA_KEY_MAP=$(cat <<'EOF'
-# Media: a write needs the app key or the peer key (MEDIA_UPLOAD_KEY=required).
+# Media: all but a download needs the app key or the peer key (MEDIA_UPLOAD_KEY=required).
+# The first rule that matches wins; the last character is veydan_relay_denied (1: no key).
 map "$request_method$uri$veydan_relay_denied" $veydan_media_denied {
-    "~^(PUT|POST|HEAD|DELETE)/(upload|mirror)/?1$" 1;
-    "~^DELETE/[0-9a-f]{64}(\.[a-z0-9]+)?1$" 1;
+    "~^(GET|HEAD)/[0-9a-fA-F]{64}(\.[a-zA-Z0-9]+)?[01]$" 0;
+    "~^GET/list/[0-9a-fA-F]{64}[01]$" 0;
+    "~^GET/[01]$" 0;
+    "~^OPTIONS/.*[01]$" 0;
+    "~1$" 1;
     default 0;
 }
 EOF

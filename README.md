@@ -32,7 +32,8 @@ It checks that every name points to this server before it asks for certificates.
 Then it installs, and prints a card: the relay address and its key, the media and push addresses, and the reference of the call node.
 The same card is saved in `/opt/veydan/server.txt` (root only).
 
-To use the server in the app: Settings → Servers → Own servers → add the relay with its key, as the card says.
+To use the server in the app, open the link the installer prints ("Link for the app"): the app asks "Add a server?" and adds it.
+How a team uses it is in "A private server for a team", below.
 
 ### What the installer checks
 
@@ -105,7 +106,7 @@ The key holds the keys of the network: give it to nobody else.
 The servers that were there before do not learn the new names by themselves: their relays accept the new one (it connects to them both ways), but their push servers watch only the relays they know.
 To tell them, add the new names to `MESH_RELAYS` and `MESH_MEDIA` in their `/opt/veydan/server.conf` and run `veydan-server rerun`.
 
-After the installer, `veydan-server` is on the server: `show` (the card), `join-token`, `add <component>`, `status`, `rerun`.
+After the installer, `veydan-server` is on the server: `show` (the card), `join-token`, `add <component>`, `status`, `rerun`, `push veydan|off`, `media-key required|open`.
 
 - Every relay connects to every other relay and syncs with it every few minutes. An event published on one relay reaches all of them.
 - With an S3 bucket, every media server serves every file. A server that has not got a file asks the bucket by its hash, with a signed request.
@@ -117,19 +118,26 @@ After the installer, `veydan-server` is on the server: `show` (the card), `join-
 
 ## Push
 
-VPush needs a Firebase service account JSON for each app it serves.
+VPush (the component `vpush`) watches the relay of your server and wakes the phones of its users when something arrives for them.
+There are two ways to reach a phone.
+
+**Through the push of the Veydan network** (`PUSH_GATEWAY=veydan`): for the official Veydan apps, whose push key belongs to the project.
+The push server of the Veydan network acts as a gateway: a phone takes a ticket from it for its push token, and registers at your VPush with that ticket and a key of its own made for pushes alone.
+Your VPush seals every push to that key, with a key of its own (`/opt/vpush/data/gateway.key`, made at its first start), and asks the gateway to wake the ticket.
+The gateway learns the token of a device, the identity that took the ticket, the address and seal key of your server that wakes it, the times, the sizes and which wakes are calls (urgent): so it can tell which of its users use your server; it does not learn who wrote, in which chat, or what came.
+No Firebase key is needed for this.
+The installer of a server with a relay asks for it (`off`, the default, is what `--yes` keeps); answered `veydan` at the first run, it adds `vpush` to the components when it is not among them, under the name `<server>-push`.
+Change it later with `veydan-server push veydan` or `veydan-server push off`, then `veydan-server rerun`; a rerun keeps the saved value.
+The answer is also on the card of the server (`p=`).
+With `off` your relay brings no push to the official apps, and they read it while they run.
+
+**With a Firebase key of your own**, for apps built with your own key: VPush needs a Firebase service account JSON for each such app.
 Set `FCM_APPS="<app id> ..."` in `server.conf` and put `fcm-<app id>.json` beside the installer.
 With one app in `FCM_APPS`, any `*.json` of a service account is accepted.
 Without a key the installer warns, and you can add the file and run again.
+Both ways can be used at once.
 
-Push to the official Veydan apps cannot come from a self-hosted server: their push key belongs to the project.
-Your server serves apps built with your own key.
 Bridges (VLink) and Veydan Cloud do not work with own servers.
-
-The installer of a server with a relay asks whether to wake phones through the push of the Veydan network (`PUSH_GATEWAY=veydan`) or not (`off`, the default, and what `--yes` keeps).
-That push learns only the token of a device and the time, never who writes to whom.
-For now the answer is only stored and put on the card of the server (`p=`).
-Change it later with `veydan-server push veydan` or `veydan-server push off`; a rerun keeps the saved value.
 
 ## A bridge
 
@@ -219,10 +227,76 @@ The node's key and TURN secret are in `/opt/vcall/data/`. The key is the node's 
 The installer prints the same link at the end ("Link for the app").
 The link holds the app key: give it to the people who may use the server, and to nobody else.
 
-    veydan://server/<id>?u=<relay>&k=<app key>[&m=<media>][&c=<call node>]&p=veydan|off&n=<network>
+    veydan://server/<id>?u=<relay>&k=<app key>[&m=<media>][&c=<call node>][&pu=<push server>]&p=veydan|off&n=<network>
 
 `<id>` is the first 16 hex digits of the sha256 of the relay address, so the app knows the server again from any card of it.
 `veydan-server card --contact <npub>` prints a link to a contact that carries the server along (`veydan://contact/<npub>?srv=…`), for a person who has no server of the network yet.
+
+## A private server for a team
+
+A server of your own is a *private server* beside the Veydan network, not a replacement for it.
+Your people keep their Veydan account and add your server to the app.
+With every private server the app keeps separate chats and groups: they live on that server alone, and nothing of them goes to the servers of Veydan.
+Two people may talk twice, once through Veydan and once on your server; these are two chats, each with its own messages and its own block.
+A private chat is marked "Private · <name of the server>" in the list of chats.
+
+Install the server (a relay at least; add `media` for files, `call` for calls and `vpush` for push) and take its link:
+
+```sh
+veydan-server card
+```
+
+The link holds the app key: give it to the people who may use the server and to nobody else.
+Media takes an upload only with the key of the server (`MEDIA_UPLOAD_KEY=required`, the default of a new install; `open` turns it off, and a server installed before the setting stays `open`).
+
+### You and a colleague who is in the Veydan network
+
+1. Add the server to your own app first: open the link of `veydan-server card` and press "Add".
+2. On the server, print a link to your contact that carries the server along:
+
+   ```sh
+   veydan-server card --contact <your npub>
+   ```
+
+3. Send it to the colleague by any way you have.
+4. The colleague opens the link (or pastes it into "New chat").
+   The app asks "Add a server?" and lists what it would add: the relay, the media, the call node, push, and whether it is a server of Veydan or not.
+   Nothing is added until the colleague presses "Add".
+5. After "Add" the private chat with you opens.
+   The link is not an invitation, so the first message of the colleague reaches you as a request; you accept it as any other.
+6. A link to a group that lives on your server brings a person who has not got the server to the same question first, and then into the group.
+   The create form of the app does not offer a server yet: a group is put on a server with the command line of the messenger (`group-create --server`).
+
+The colleague can remove the server in the settings; it goes from all of their devices, and its private chats go with it.
+
+### You and a person you already talk to in the Veydan network
+
+1. Add the server to your own app, as above.
+2. In the chat with the person, share your contact and choose "Invite to a private chat on <the server>".
+   The card of the server goes into the chat as a message.
+3. The person presses "Add the server" and then "Open a private chat".
+   A second, private chat with you opens at once, on both sides, with no request; the chat through Veydan stays as it was.
+
+### Push
+
+Without push the apps read your server while they run; a sleeping Android app learns of a message when it is opened.
+To wake phones, answer `veydan` at the install, or later:
+
+```sh
+veydan-server push veydan   # or: veydan-server push off
+veydan-server rerun
+```
+
+The push server of the Veydan network then acts as a gateway: it learns the token of a device, the identity that took the ticket, the address and seal key of your server, the times, the sizes and which wakes are calls; it does not learn who wrote, in which chat, or what came.
+The VPush of your server does the rest, and no Firebase key is needed.
+The gateway needs VPush 0.5.0 or newer (older versions refuse the `[gateway]` table, so the kit stops with a message) and a `vpush` on the server: on a server that has none, `veydan-server push veydan` and `veydan-server card` say so, and `veydan-server add vpush` adds it.
+The app cannot turn it on from the card in this version: the card says `p=veydan`, but the address of your push server is not on it yet.
+
+### What is not there yet
+
+- Everyone who has the card has the same app key: you cannot let one person in and keep another out without changing the key for everybody. A list of allowed keys is planned.
+- There is no UnifiedPush.
+- Bridges do not work with a private server.
 
 ## Where things live
 
@@ -294,8 +368,8 @@ Last test: publish an event on one relay and read it from another; upload a file
 
 - There is no uninstall. A component removed from `COMPONENTS` is not removed from the server.
 - The database of a relay does not shrink when the retention timer deletes old events: the file keeps its size and the freed pages are used again. Watch the disk (`df -h /opt/strfry`) until the first week has passed.
-- `MEDIA_UPLOAD_KEY=required` (the default of a new install) turns the check below on; `open` turns it off, and a server installed before the setting existed stays `open`. The network of Veydan keeps uploads open until the apps carry the key.
-- Media takes an upload (`PUT` and `HEAD` of `/upload`, `/mirror`, `DELETE` of a blob) only with the key of the server, as the relay does: `?key=` or the header `X-API-Key`, the app key or the peer key (the other media servers). Without it nginx answers 401. The app takes the key from the card of the server. Downloads and the list stay open. The key is inside the app, so this keeps strangers off, not people who have the app; an upload is still signed by the nostr key of its author. Nginx limits the request rate, and a request to 20 MiB.
+- `MEDIA_UPLOAD_KEY=required` (the default of a new install) turns the check below on; `open` turns it off, and a server installed before the setting existed stays `open`. The network of Veydan keeps uploads open until the apps carry the key. A server handed out with `veydan-server card` should be `required`: while it is `open`, anyone with a nostr key can upload, and the installer and the card say so on every run (a warning on stderr). `veydan-server media-key required` sets it, then `veydan-server rerun`.
+- Media takes anything but a download of a blob by its hash, the list of a key, the index and the CORS preflight (an upload, a mirror, a delete; the case of the path does not matter) only with the key of the server, as the relay does: `?key=` or the header `X-API-Key`, the app key or the peer key (the other media servers). Without it nginx answers 401. The app takes the key from the card of the server. Downloads and the list stay open. The key is inside the app, so this keeps strangers off, not people who have the app; an upload is still signed by the nostr key of its author. Nginx limits the request rate, and a request to 20 MiB.
 - The app key is inside the app, so anyone who has the app can query a relay with it. Message content stays encrypted. vguard gives gift wraps (kind 1059) only to the key that signed in (NIP-42) and events of groups (kind 9) only by `#h`; what else is on a relay (profiles, follow and relay lists) is public, as on any relay. A relay without vguard would give everything to the app key, metadata included: the kit puts up no relay without it.
 - The strfry router does not check the TLS certificate of the other relay and writes its URL, with the peer key, to the journal. Keep the path between your servers trusted.
 - The media index is per server. Without a shared bucket, a file is lost for the network if its server is gone.

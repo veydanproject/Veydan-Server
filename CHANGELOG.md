@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.7
+
+A server with media that is still `open` says so at every run of the installer and on `veydan-server card`; `veydan-server media-key required|open` changes the setting (then `veydan-server rerun`), and the check now refuses everything but a download, the list, the index and the CORS preflight, whatever the case of the path.
+
+The card of a server with `vpush` carries its push server as `pu=https://<VPUSH_HOST>`, so an app that adds the server can register for pushes through the gateway.
+
+`PUSH_GATEWAY=veydan` now does what it says: VPush of the server wakes the phones of the official Veydan apps (`VEYDAN_PUSH_APPS` of `versions.conf`) through the push of the Veydan network, the gateway (`VEYDAN_PUSH_GATEWAY`, the push server the app's manifest names for the region default), with no Firebase key.
+The phone registers with a ticket the gateway gave it and a key of its own for pushes; every push is sealed to that key with the key of the server (`/opt/vpush/data/gateway.key`, made by vpush at its first start), and the gateway sees the ticket, the size and the time.
+Apps with Firebase keys of their own are pushed to directly, as before, and both ways can be used at once; with `off` nothing changed.
+`veydan` chosen at the first run brings `vpush` along when it is not among the components (the summary says so), and the card says how phones are woken: through the push of the Veydan network, or, with `off`, the sentence of before.
+`veydan-server push` says that the setting reaches vpush at the next run of the kit (`veydan-server rerun`).
+It needs Veydan-Push 0.5.0 (`VPUSH_VERSION`): the kit stops with a message when `PUSH_GATEWAY=veydan` meets an older one, and a run, `veydan-server push veydan` or `veydan-server card` of a server set to the gateway without `vpush` says `veydan-server add vpush`.
+With this, a team can use the server as a private server in the Veydan apps: the app adds it from its card, keeps separate chats and groups on it, and wakes phones through the gateway; "A private server for a team" in the README walks it through.
+
 ## 0.1.6
 
 The push server of a network comes from the release of Veydan-Push 0.4.0 too (`VPUSH_VERSION`), so `vpush` can be chosen at the install.
@@ -9,8 +23,10 @@ For now it is only stored and shown on the card of the server.
 
 The media server takes an upload only with the key of the server (`?key=` or `X-API-Key`, the app key or the peer key), as the relay does; before, anyone with a nostr key could upload.
 Downloads and the list stay open. The app takes the key from the card of the server.
+The check is a setting, `MEDIA_UPLOAD_KEY`: `required` for a new install, `open` for a server installed before the setting existed (it keeps its old behaviour until you set it).
 
 `veydan-server card` prints the link that adds this server to the app (`--contact <npub>`: a link to a contact that carries the server along); the installer prints it at the end of a run.
+The card names this server's own relay and media server, not the first relay of the network it belongs to.
 
 `veydan-server rerun` no longer breaks the kit: run through its own link, it made the link point to itself, and then `show`, `add`, `join-token` and `rerun` all failed.
 

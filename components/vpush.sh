@@ -43,7 +43,7 @@ done
 # installer or in secrets/ of the kit; with FCM_APPS naming one app, any
 # service account JSON beside the installer is its key. A key already on
 # the server stays when the kit brings none.
-apps=""
+apps="" served=""
 fcm_dirs="$FROM $HERE/secrets"
 app_key() { # app_key <app id> → the path of its key in the kit, or nothing
     local d
@@ -73,15 +73,43 @@ for app in $FCM_APPS; do
         continue
     fi
     apps+=$'\n'"[apps.\"$app\".fcm]"$'\n'"service_account = \"$P/etc/secrets/fcm-$app.json\""$'\n'
+    served+=" $app"
 done
+
+# PUSH_GATEWAY=veydan: the phones of the apps of Veydan are woken through the
+# push of the Veydan network, the gateway (services/push/spec/protocol.md,
+# "The gateway"). No key of FCM is asked for: the device registers here with
+# a ticket the gateway gave it for its token, and with a push key of its own;
+# every push is sealed to that key with the key of this server (made by vpush
+# at its first start, data/gateway.key) and handed to the gateway, which sees
+# the ticket, the size and the time, and nothing of what is inside. Apps with
+# keys of their own (above) are pushed to directly as well.
+gateway=""
+if [ "${PUSH_GATEWAY:-off}" = veydan ]; then
+    [ -n "${VEYDAN_PUSH_GATEWAY:-}" ] || die "vpush: VEYDAN_PUSH_GATEWAY of versions.conf is empty: no gateway to wake phones through"
+    # The [gateway] table is known to Veydan-Push 0.5.0 and newer; an older
+    # vpush refuses the file (unknown fields) and does not start. The kit's
+    # own bin/vpush is trusted: it is built from this tree.
+    if [ ! -f "$HERE/bin/vpush" ]; then
+        [ -n "${VPUSH_VERSION:-}" ] && [ "$(printf '%s\n%s\n' 0.5.0 "$VPUSH_VERSION" | sort -V | head -n1)" = 0.5.0 ] \
+            || die "vpush: PUSH_GATEWAY=veydan needs Veydan-Push 0.5.0 or newer, and VPUSH_VERSION of versions.conf is '${VPUSH_VERSION:-}' (older versions refuse the [gateway] table and do not start): update the kit, or put bin/vpush of 0.5.0 into it"
+    fi
+    for app in ${VEYDAN_PUSH_APPS:-net.veydan.mobile}; do
+        [[ "$served " == *" $app "* ]] && continue
+        apps+=$'\n'"[apps.\"$app\"]"$'\n'
+        served+=" $app"
+    done
+    gateway=$'\n'"[gateway]"$'\n'"url = \"$VEYDAN_PUSH_GATEWAY\""$'\n'"key_file = \"$P/data/gateway.key\""$'\n'
+fi
 if [ -z "$apps" ]; then
-    apps=$'\n'"# No app yet: FCM_APPS in server.conf and fcm-<app id>.json beside the installer."$'\n'
-    warn "vpush serves no app: set FCM_APPS in server.conf and put the Firebase key beside the installer"
+    apps=$'\n'"# No app yet: FCM_APPS in server.conf and fcm-<app id>.json beside the installer, or PUSH_GATEWAY=veydan."$'\n'
+    warn "vpush serves no app: set FCM_APPS in server.conf and put the Firebase key beside the installer, or wake phones through the push of the Veydan network (veydan-server push veydan)"
 fi
 
 V_VPUSH_FQDN=$VPUSH_FQDN
 V_RELAYS_ALLOW=$relay_allow
 V_APPS=$apps
+V_GATEWAY=$gateway
 # The kit's part of vpush.toml (apps, relays) is written on every run; the
 # rest of the file is the admin's.
 render_block "$HERE/templates/vpush.toml" "$P/etc/vpush.toml" 0640 root:vpush "# VPush of " "public_url = "

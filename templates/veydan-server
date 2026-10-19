@@ -11,6 +11,7 @@
 #   veydan-server card            the link the app takes to add this server
 #                                 (--contact <npub>: a link to a contact with it)
 #   veydan-server push veydan|off wake phones through the push of the Veydan network
+#   veydan-server media-key required|open  uploads to media need the key of the server, or not
 set -euo pipefail
 
 STATE=${VEYDAN_STATE:-/opt/veydan}
@@ -24,7 +25,7 @@ kit() {
     printf '%s' "$k"
 }
 
-# The card of the server as a link: veydan://server/<id>?u=…&k=…[&m=…][&c=…]&p=…&n=…
+# The card of the server as a link: veydan://server/<id>?u=…&k=…[&m=…][&c=…][&pu=…]&p=…&n=…
 # <id> is the first 16 hex of the sha256 of the relay URL (lowercase, no
 # trailing slash), so the app knows the same server from any card of it.
 # Values are percent-encoded. Only a server with a relay has a card.
@@ -51,9 +52,53 @@ server_link() {
         q="u=$(uri "$url")&k=$(uri "${MESH_APP_KEY:-}")"
         [ -z "$media" ] || q+="&m=$(uri "$media")"
         [ -z "$call" ] || q+="&c=$(uri "$call")"
+        # The push server of this server: a phone registers at it through the
+        # gateway (the app reads it as the push server of the card).
+        if has vpush && [ -n "${VPUSH_HOST:-}" ]; then
+            push=https://$(fqdn "$VPUSH_HOST"); push=$(printf '%s' "$push" | tr 'A-Z' 'a-z')
+            q+="&pu=$(uri "$push")"
+        fi
         q+="&p=$(uri "${PUSH_GATEWAY:-off}")&n=$(uri "${NETWORK:-}")"
         printf 'veydan://server/%s?%s\n' "$id" "$q"
     )
+}
+
+# A server with media whose uploads are open (installed before the setting
+# existed, or set so): said on stderr, in the language of the admin when the
+# kit has it. The text is M[warn_media_open] of the kit's lang files.
+media_open_warning() {
+    (
+        # shellcheck disable=SC1090
+        . "$CONF" 2>/dev/null || exit 0
+        [[ " ${COMPONENTS:-} " == *" media "* ]] || exit 0
+        [ "${MEDIA_UPLOAD_KEY:-open}" = open ] || exit 0
+        text="media: uploads are open to anyone with a nostr key (MEDIA_UPLOAD_KEY=open); a private server should set MEDIA_UPLOAD_KEY=required in server.conf and rerun"
+        declare -A M
+        l=$STATE/kit/current/lang
+        if [ -f "$l/en.sh" ]; then
+            # shellcheck disable=SC1090
+            . "$l/en.sh"
+            case "${LC_ALL:-${LANG:-}}" in ru*) [ -f "$l/ru.sh" ] && . "$l/ru.sh" ;; esac
+            text=${M[warn_media_open]:-$text}
+        fi
+        printf '\033[1;33m!!\033[0m %s\n' "$text" >&2
+    ) || true
+}
+
+# Whether the server has a component: in COMPONENTS of server.conf, or, for
+# vpush, installed in /opt/vpush.
+conf_has() {
+    [ "$1" != vpush ] || [ ! -d /opt/vpush ] || return 0
+    ( # shellcheck disable=SC1090
+      . "$CONF" 2>/dev/null; [[ " ${COMPONENTS:-} " == *" $1 "* ]] )
+}
+# A card with p=veydan and no push address (pu=): this server has no vpush,
+# and the app registers nothing.
+push_hint() {
+    case "$1" in *"&p=veydan"*) ;; *) return 0 ;; esac
+    case "$1" in *"&pu="*) return 0 ;; esac
+    conf_has vpush && return 0
+    echo "card: p=veydan, but this server has no vpush and the card has no push address: veydan-server add vpush" >&2
 }
 
 case "${1:-}" in
@@ -81,6 +126,8 @@ case "${1:-}" in
             die "veydan-server card [--contact <npub>]"
         fi
         link=$(server_link) || exit 1
+        media_open_warning
+        push_hint "$link"
         if [ -n "$contact" ]; then
             # base64url without padding, as the app reads it.
             printf 'veydan://contact/%s?srv=%s\n' "$contact" "$(printf '%s' "$link" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
@@ -89,8 +136,9 @@ case "${1:-}" in
         fi
         ;;
     push)
-        # Stored in server.conf and shown on the card (p=); the gateway
-        # itself comes later.
+        # Stored in server.conf and shown on the card (p=); vpush of this
+        # server is set to wake phones through the gateway, or not, at the
+        # next run of the kit (components/vpush.sh).
         case "${2:-}" in veydan|off) ;; *) die "veydan-server push veydan|off" ;; esac
         [ -w "$CONF" ] || die "no $CONF, or not writable: run install.sh once, as root"
         if grep -q '^PUSH_GATEWAY=' "$CONF"; then
@@ -98,7 +146,23 @@ case "${1:-}" in
         else
             printf 'PUSH_GATEWAY=%s\n' "$2" >> "$CONF"
         fi
-        server_link
+        echo "push: $2 in $CONF; vpush takes it at the next run of the kit: veydan-server rerun" >&2
+        link=$(server_link) || exit 1
+        if [ "$2" = veydan ] && ! conf_has vpush; then
+            echo "push: this server has no vpush, so no phone is woken: veydan-server add vpush" >&2
+        fi
+        printf '%s\n' "$link"
+        ;;
+    media-key)
+        # Stored in server.conf; media takes it at the next run of the kit.
+        case "${2:-}" in required|open) ;; *) die "veydan-server media-key required|open" ;; esac
+        [ -w "$CONF" ] || die "no $CONF, or not writable: run install.sh once, as root"
+        if grep -q '^MEDIA_UPLOAD_KEY=' "$CONF"; then
+            sed -i "s/^MEDIA_UPLOAD_KEY=.*/MEDIA_UPLOAD_KEY=$2/" "$CONF"
+        else
+            printf 'MEDIA_UPLOAD_KEY=%s\n' "$2" >> "$CONF"
+        fi
+        echo "media-key: $2 in $CONF; media takes it at the next run of the kit: veydan-server rerun" >&2
         ;;
     add)
         need_root
@@ -124,7 +188,7 @@ case "${1:-}" in
         systemctl --no-pager status $units 2>/dev/null | grep -E '^[●○×x]|Active:' || true
         ;;
     *)
-        sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
         exit 1
         ;;
 esac
