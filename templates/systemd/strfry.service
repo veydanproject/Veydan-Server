@@ -12,6 +12,10 @@ RestartSec=2
 TimeoutStopSec=20
 UMask=0027
 LimitNOFILE=65536
+# What strfry holds for a client that reads slower than it asks has no
+# bound of its own: past this the relay alone is killed and restarted,
+# not the media, the push and the agent of the machine with it.
+MemoryMax=60%
 
 # The relay needs the network and its database, nothing else of the machine.
 NoNewPrivileges=true

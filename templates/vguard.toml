@@ -1,7 +1,9 @@
 # vguard of the relay ${V_RELAY_FQDN}: the read policy between nginx and
-# strfry (VGuard of Veydan-Push, its spec/vguard.md). The kit's block is
+# strfry (Veydan-Guard, its spec/vguard.md). The kit's block is
 # written anew on every run; what is below it is yours.
 # Apply: systemctl restart vguard
+# Top-level keys of your own go above the kit block: it may end in a table,
+# [access] (a team or channel server).
 
 # --- kit begin: the addresses and the names of the relay (server.conf).
 listen = "127.0.0.1:7778"
@@ -13,6 +15,7 @@ relay_hosts = [${V_GUARD_HOSTS}]
 # file, nobody denied.
 ${V_GUARD_DENIED}
 ${V_GUARD_DENIED_GROUPS}
+${V_GUARD_ACCESS}
 # --- kit end
 
 # Limits; the defaults follow strfry.conf (maxWebsocketPayloadSize,

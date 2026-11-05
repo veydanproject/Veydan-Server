@@ -8,14 +8,27 @@
 #   veydan-server add <component> adds relay, media, vpush or call here
 #   veydan-server status          the services of this server
 #   veydan-server rerun           the installer again, with the saved answers
-#   veydan-server card            the link the app takes to add this server
-#                                 (--contact <npub>: a link to a contact with it)
+#   veydan-server card [--invite <code>] [--contact <npub>]
+#                                 the link the app takes to add this server
+#                                 (--invite: with an invite of a team or channel
+#                                 server; --contact: a link to a contact with it)
 #   veydan-server push veydan|off wake phones through the push of the Veydan network
 #   veydan-server media-key required|open  uploads to media need the key of the server, or not
+#   veydan-server upload-key <label> <pubkey> [days]  an upload key of one person
+#                                 for the media of this server (30 days, at most 31)
+#   veydan-server upload-key revoke <label> <pubkey>  ends the upload keys of the pair
+#   veydan-server upload-key list the revoked pairs
+#   veydan-server mode [open|team|channel]  who uses the relay (ACCESS_MODE)
+#   veydan-server invite [--uses N] [--days D] [--label L]  an invite to a team
+#                                 or channel server: the card that carries it
+#                                 (1 use, 7 days by default)
+#   veydan-server invite list | revoke <id>  the invites, or end one
+#   veydan-server members list | add <npub|hex> | remove <npub|hex>
 set -euo pipefail
 
 STATE=${VEYDAN_STATE:-/opt/veydan}
 CONF=$STATE/server.conf
+G=/opt/vguard
 
 die() { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 need_root() { [ "$(id -u)" = 0 ] || die "run as root"; }
@@ -25,12 +38,15 @@ kit() {
     printf '%s' "$k"
 }
 
-# The card of the server as a link: veydan://server/<id>?u=…&k=…[&m=…][&c=…][&pu=…]&p=…&n=…
+# The card of the server as a link:
+#   veydan://server/<id>?u=…&k=…[&m=…][&c=…][&pu=…]&p=…&n=…[&a=team|channel][&inv=<code>]
 # <id> is the first 16 hex of the sha256 of the relay URL (lowercase, no
 # trailing slash), so the app knows the same server from any card of it.
-# Values are percent-encoded. Only a server with a relay has a card.
+# Values are percent-encoded. Only a server with a relay has a card. a=:
+# the access mode, only when it is not open (the card of an open server is
+# as it was); inv=: an invite of vguard (server_link <code>).
 server_link() {
-    local json=$STATE/manifest-node.json
+    local json=$STATE/manifest-node.json invite=${1:-}
     [ -r "$CONF" ] || { echo "no $CONF, or not readable: run install.sh once, as root" >&2; return 1; }
     (
         # shellcheck disable=SC1090
@@ -59,6 +75,8 @@ server_link() {
             q+="&pu=$(uri "$push")"
         fi
         q+="&p=$(uri "${PUSH_GATEWAY:-off}")&n=$(uri "${NETWORK:-}")"
+        [ "${ACCESS_MODE:-open}" = open ] || q+="&a=$(uri "$ACCESS_MODE")"
+        [ -z "$invite" ] || q+="&inv=$(uri "$invite")"
         printf 'veydan://server/%s?%s\n' "$id" "$q"
     )
 }
@@ -84,6 +102,48 @@ media_open_warning() {
         printf '\033[1;33m!!\033[0m %s\n' "$text" >&2
     ) || true
 }
+
+# A setting of this server in server.conf: the line rewritten, or added
+# (a conf of an older install has none).
+set_conf() { # set_conf <NAME> <value>
+    [ -w "$CONF" ] || die "no $CONF, or not writable: run install.sh once, as root"
+    if grep -q "^$1=" "$CONF"; then
+        sed -i "s/^$1=.*/$1=$2/" "$CONF"
+    else
+        printf '%s=%s\n' "$1" "$2" >> "$CONF"
+    fi
+}
+
+# The access mode of the relay (ACCESS_MODE of server.conf): open when the
+# conf has none (a server installed before the setting).
+access_mode() {
+    ( # shellcheck disable=SC1090
+      . "$CONF" 2>/dev/null; printf '%s' "${ACCESS_MODE:-open}" )
+}
+# What touches the members and invites needs a relay that is not open.
+need_access() {
+    [ -r "$CONF" ] || die "no $CONF, or not readable: run install.sh once, as root"
+    conf_has relay || die "this server has no relay: members and invites are the relay's (vguard)"
+    [ "$(access_mode)" != open ] \
+        || die "this server is open (ACCESS_MODE=open): anyone who has its card uses it, and there are no members or invites. veydan-server mode team (or channel), then veydan-server rerun"
+}
+# The CLI of vguard, as the user vguard (it writes the files of data/).
+# VEYDAN_VGUARD: a program in its place, for the tests (then no HUP).
+guard() {
+    if [ -n "${VEYDAN_VGUARD:-}" ]; then
+        "$VEYDAN_VGUARD" access --config "$G/etc/vguard.toml" "$@"
+    else
+        need_root
+        runuser -u vguard -- "$G/bin/vguard" access --config "$G/etc/vguard.toml" "$@"
+    fi
+}
+# The running vguard reads the files again (it would within a minute anyway).
+guard_reload() {
+    [ -z "${VEYDAN_VGUARD:-}" ] || return 0
+    systemctl reload vguard || echo "vguard did not take the signal: it reads the files again within a minute" >&2
+}
+invite_re='^vi1\.[A-Za-z0-9_-]{1,128}\.[A-Za-z0-9_-]{1,128}$'
+key_re='^(npub1[02-9ac-hj-np-z]{58}|[0-9a-f]{64})$'
 
 # Whether the server has a component: in COMPONENTS of server.conf, or, for
 # vpush, installed in /opt/vpush.
@@ -118,14 +178,23 @@ case "${1:-}" in
         printf 'veydan-join-1.%s\n' "$(printf '%s\n' "$net" | base64 -w0)"
         ;;
     card)
-        contact=""
-        if [ "${2:-}" = --contact ]; then
-            contact=${3:-}
-            [[ "$contact" =~ ^npub1[02-9ac-hj-np-z]{20,}$ ]] || die "veydan-server card --contact <npub>"
-        elif [ -n "${2:-}" ]; then
-            die "veydan-server card [--contact <npub>]"
-        fi
-        link=$(server_link) || exit 1
+        contact="" invite=""
+        shift
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --contact)
+                    contact=${2:-}
+                    [[ "$contact" =~ ^npub1[02-9ac-hj-np-z]{20,}$ ]] || die "veydan-server card --contact <npub>"
+                    shift 2 ;;
+                --invite)
+                    invite=${2:-}
+                    [[ "$invite" =~ $invite_re ]] || die "veydan-server card --invite <code>: the code of veydan-server invite (vi1.<id>.<mac>)"
+                    need_access
+                    shift 2 ;;
+                *) die "veydan-server card [--invite <code>] [--contact <npub>]" ;;
+            esac
+        done
+        link=$(server_link "$invite") || exit 1
         media_open_warning
         push_hint "$link"
         if [ -n "$contact" ]; then
@@ -140,12 +209,7 @@ case "${1:-}" in
         # server is set to wake phones through the gateway, or not, at the
         # next run of the kit (components/vpush.sh).
         case "${2:-}" in veydan|off) ;; *) die "veydan-server push veydan|off" ;; esac
-        [ -w "$CONF" ] || die "no $CONF, or not writable: run install.sh once, as root"
-        if grep -q '^PUSH_GATEWAY=' "$CONF"; then
-            sed -i "s/^PUSH_GATEWAY=.*/PUSH_GATEWAY=$2/" "$CONF"
-        else
-            printf 'PUSH_GATEWAY=%s\n' "$2" >> "$CONF"
-        fi
+        set_conf PUSH_GATEWAY "$2"
         echo "push: $2 in $CONF; vpush takes it at the next run of the kit: veydan-server rerun" >&2
         link=$(server_link) || exit 1
         if [ "$2" = veydan ] && ! conf_has vpush; then
@@ -156,13 +220,137 @@ case "${1:-}" in
     media-key)
         # Stored in server.conf; media takes it at the next run of the kit.
         case "${2:-}" in required|open) ;; *) die "veydan-server media-key required|open" ;; esac
-        [ -w "$CONF" ] || die "no $CONF, or not writable: run install.sh once, as root"
-        if grep -q '^MEDIA_UPLOAD_KEY=' "$CONF"; then
-            sed -i "s/^MEDIA_UPLOAD_KEY=.*/MEDIA_UPLOAD_KEY=$2/" "$CONF"
-        else
-            printf 'MEDIA_UPLOAD_KEY=%s\n' "$2" >> "$CONF"
-        fi
+        set_conf MEDIA_UPLOAD_KEY "$2"
         echo "media-key: $2 in $CONF; media takes it at the next run of the kit: veydan-server rerun" >&2
+        ;;
+    mode)
+        # Stored in server.conf; vguard and nginx take it at the next run of
+        # the kit. Without a word: the mode now.
+        if [ -z "${2:-}" ]; then
+            [ -r "$CONF" ] || die "no $CONF, or not readable: run install.sh once, as root"
+            access_mode; echo
+            exit 0
+        fi
+        case "$2" in open|team|channel) ;; *) die "veydan-server mode open|team|channel" ;; esac
+        set_conf ACCESS_MODE "$2"
+        echo "mode: $2 in $CONF; the relay takes it at the next run of the kit: veydan-server rerun" >&2
+        if [ "$2" != open ]; then
+            # shellcheck disable=SC1090
+            admin=$( . "$CONF"; printf '%s' "${ADMIN_PUBKEY:-}" )
+            [ -n "$admin" ] || echo "mode: $2 needs ADMIN_PUBKEY, your npub, in $CONF (the owner, always a member): set it before the rerun" >&2
+            conf_has relay || echo "mode: this server has no relay; the mode is the relay's" >&2
+        fi
+        ;;
+    invite)
+        # An invite of vguard: a code that lets N people in for D days.
+        need_access
+        case "${2:-}" in
+            list)
+                guard invite list
+                ;;
+            revoke)
+                [[ "${3:-}" =~ ^[A-Za-z0-9_-]{1,128}$ ]] || die "veydan-server invite revoke <id> (the id of veydan-server invite list)"
+                guard invite revoke "$3"
+                guard_reload
+                ;;
+            *)
+                shift
+                args=() uses=1 days=7
+                while [ $# -gt 0 ]; do
+                    case "$1" in
+                        --uses) uses=${2:-}; [[ "$uses" =~ ^[0-9]{1,6}$ ]] && [ "$uses" -ge 1 ] || die "--uses: a number of people, 1 or more"; shift 2 ;;
+                        --days) days=${2:-}; [[ "$days" =~ ^[0-9]{1,4}$ ]] && [ "$days" -ge 1 ] || die "--days: a number of days, 1 or more"; shift 2 ;;
+                        --label) [[ "${2:-}" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "--label: letters, digits, . _ - (up to 64)"; args+=(--label "$2"); shift 2 ;;
+                        *) die "veydan-server invite [--uses N] [--days D] [--label L] | list | revoke <id>" ;;
+                    esac
+                done
+                code=$(guard invite --uses "$uses" --days "$days" "${args[@]}" | tail -n1 | tr -d '[:space:]') || die "vguard made no invite"
+                [[ "$code" =~ $invite_re ]] || die "vguard gave no invite code: $code"
+                guard_reload
+                link=$(server_link "$code") || exit 1
+                echo "invite: $uses use(s), $days day(s); the code alone, for the app's \"Join by code\":" >&2
+                echo "$code" >&2
+                printf '%s\n' "$link"
+                ;;
+        esac
+        ;;
+    members)
+        need_access
+        case "${2:-}" in
+            list)
+                guard members list
+                ;;
+            add|remove)
+                [[ "${3:-}" =~ $key_re ]] || die "veydan-server members $2 <npub|hex>: an npub or 64 hex digits, lowercase"
+                guard members "$2" "$3"
+                guard_reload
+                ;;
+            *)
+                die "veydan-server members list | add <npub|hex> | remove <npub|hex>"
+                ;;
+        esac
+        ;;
+    upload-key)
+        # The upload keys of the media site (templates/njs/upload.js): the
+        # app of the owner makes them too, with the app key, as here. The
+        # revocations are one file per pair, <label>.<pubkey>, holding the time.
+        [ -r "$CONF" ] || die "no $CONF, or not readable: run install.sh once, as root"
+        keys=$STATE/media-keys
+        now=${VEYDAN_NOW:-$(date +%s)}   # VEYDAN_NOW: the tests
+        pair() {
+            [[ "${1:-}" =~ ^[0-9a-f]{1,64}$ ]] || die "the label is 1 to 64 hex digits, lowercase"
+            [[ "${2:-}" =~ ^[0-9a-f]{64}$ ]] || die "the pubkey is 64 hex digits, lowercase (not an npub)"
+        }
+        case "${2:-}" in
+            list)
+                [ -d "$keys" ] || exit 0
+                for f in "$keys"/*.*; do
+                    [ -f "$f" ] || continue
+                    name=$(basename "$f")
+                    printf '%s %s revoked %s\n' "${name%%.*}" "${name#*.}" "$(date -u -d "@$(cat "$f")" '+%Y-%m-%d %H:%M UTC')"
+                done
+                ;;
+            revoke)
+                pair "${3:-}" "${4:-}"
+                [ -d "$keys" ] && [ -w "$keys" ] || die "no $keys, or not writable: a server with media, as root"
+                tmp=$(mktemp "$keys/.revoke.XXXXXX")
+                printf '%s\n' "$now" > "$tmp"
+                # nginx's workers read and replace it.
+                [ "$(id -u)" != 0 ] || chown www-data:www-data "$tmp"
+                chmod 0600 "$tmp"
+                mv -f "$tmp" "$keys/$3.$4"
+                # Revocations older than any key still alive (32 days).
+                for f in "$keys"/*.*; do
+                    if [ -f "$f" ] && [ "$(cat "$f")" -lt $((now - 32 * 86400)) ] 2>/dev/null; then rm -f "$f"; fi
+                done
+                echo "upload-key: the keys of $3 $4 made until now are refused" >&2
+                ;;
+            ""|-*)
+                die "veydan-server upload-key <label> <pubkey> [days] | revoke <label> <pubkey> | list"
+                ;;
+            *)
+                pair "$2" "${3:-}"
+                days=${4:-30}
+                [[ "$days" =~ ^[0-9]+$ ]] && [ "$days" -ge 1 ] && [ "$days" -le 31 ] || die "days: 1 to 31"
+                (
+                    # shellcheck disable=SC1090
+                    . "$CONF"
+                    [[ " ${COMPONENTS:-} " == *" media "* ]] && [ -n "${MEDIA_HOST:-}" ] || die "this server has no media"
+                    [ -n "${MESH_APP_KEY:-}" ] || die "no MESH_APP_KEY in $CONF"
+                    [ "${MEDIA_UPLOAD_KEY:-open}" = required ] \
+                        || echo "upload-key: uploads here are open (MEDIA_UPLOAD_KEY=open); the key is needed once they are required" >&2
+                    # The name of the media site, as on the card: lowercase, no port.
+                    case "$MEDIA_HOST" in *.*) host=$MEDIA_HOST ;; *) host=$MEDIA_HOST.${BASE_DOMAIN:-} ;; esac
+                    host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
+                    exp=$((now + days * 86400))
+                    mac=$(printf 'veydan.media.upload.v1\n%s\n%s\n%s\n%s\n%s' "$host" "$2" "$3" "$now" "$exp" \
+                        | openssl dgst -sha256 -hmac "$MESH_APP_KEY" | sed 's/.*= //' | cut -c1-32)
+                    [[ "$mac" =~ ^[0-9a-f]{32}$ ]] || die "openssl gave no HMAC"
+                    echo "upload-key: for https://$host until $(date -u -d "@$exp" '+%Y-%m-%d %H:%M UTC')" >&2
+                    printf 'vu1.%s.%s.%s.%s.%s\n' "$2" "$3" "$now" "$exp" "$mac"
+                )
+                ;;
+        esac
         ;;
     add)
         need_root
@@ -188,7 +376,8 @@ case "${1:-}" in
         systemctl --no-pager status $units 2>/dev/null | grep -E '^[●○×x]|Active:' || true
         ;;
     *)
-        sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+        # The usage: the head of this file.
+        awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0" | sed 's/^# \{0,1\}//'
         exit 1
         ;;
 esac

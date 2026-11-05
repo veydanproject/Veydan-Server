@@ -97,7 +97,7 @@ fi
 BASE_DOMAIN="" NETWORK="" MESH_RELAYS="" MESH_MEDIA="" MESH_ORIGINS="" MESH_APP_KEY="" MESH_PEER_KEY=""
 S3_ENDPOINT="" S3_BUCKET="" S3_REGION="" S3_ACCESS_KEY="" S3_SECRET_KEY=""
 TLS=letsencrypt ACME_EMAIL="" FIREWALL=ufw ADMIN_PUBKEY="" VLINK_REGISTRY_HOST=""
-SERVER="" COMPONENTS="" RELAY_HOST="" MEDIA_HOST="" VPUSH_HOST="" REGION="" RELAY_NAME="" SKIP_DNS_CHECK=0 FCM_APPS="" PUSH_GATEWAY="" MEDIA_UPLOAD_KEY=""
+SERVER="" COMPONENTS="" RELAY_HOST="" MEDIA_HOST="" VPUSH_HOST="" REGION="" RELAY_NAME="" SKIP_DNS_CHECK=0 FCM_APPS="" PUSH_GATEWAY="" MEDIA_UPLOAD_KEY="" ACCESS_MODE=""
 RELAY_ALIASES="" MEDIA_ALIASES="" VPUSH_ALIASES=""
 RELAY_RETENTION_DAYS=90
 CALL_PUBLIC_IP="" CALL_PORT=8443 CALL_SFU_PORT=3479 CALL_RELAY_PORTS=49152-49999 CALL_REGISTRY_URL=""
@@ -256,8 +256,26 @@ PUSH_GATEWAY=${PUSH_GATEWAY:-off}
 if [ -z "$MEDIA_UPLOAD_KEY" ]; then
     if [ "$FIRST" = 1 ]; then MEDIA_UPLOAD_KEY=required; else MEDIA_UPLOAD_KEY=open; fi
 fi
+# Who uses the relay (vguard's [access], components/guard.sh): open (anyone
+# with the card), team (members and the people they invite) or channel
+# (anyone reads, without the key; members write). Membership is the relay's
+# own, so a mode other than open is for a server of one relay: the first run
+# of such a server asks, with team; a server of a network of several relays
+# (one that joins, say) and a server installed before the setting existed
+# stay open. `veydan-server mode` changes it.
+if [ -z "$ACCESS_MODE" ]; then
+    ACCESS_MODE=open
+    # shellcheck disable=SC2086  # one name per word
+    if [ "$FIRST" = 1 ] && has relay && [ "$JOINED" = 0 ] && [ "$(printf '%s\n' $MESH_RELAYS | grep -c .)" -le 1 ]; then
+        ACCESS_MODE=team
+    fi
+fi
 if has relay && [ "$FIRST" = 1 ]; then
     ask PUSH_GATEWAY q_push_gateway "veydan off"
+    ask ACCESS_MODE q_access_mode "open team channel"
+    # The owner is always a member, and the one who invites: vguard admits
+    # ADMIN_PUBKEY (hex or npub) whatever the lists say.
+    [ "$ACCESS_MODE" = open ] || [ -n "$ADMIN_PUBKEY" ] || ask ADMIN_PUBKEY q_admin_pubkey
 fi
 # A relay woken through the gateway needs a push server of its own to watch
 # it: chosen with the gateway at the first run, vpush comes along, under
@@ -304,6 +322,17 @@ fi
 case "$PUSH_GATEWAY" in veydan|off) ;; *) die "PUSH_GATEWAY is veydan or off" ;; esac
 case "$MEDIA_UPLOAD_KEY" in required|open) ;; *) die "MEDIA_UPLOAD_KEY is required or open" ;; esac
 has media && [ "$MEDIA_UPLOAD_KEY" = open ] && warn "$(msg warn_media_open)"
+case "$ACCESS_MODE" in open|team|channel) ;; *) die "ACCESS_MODE is open, team or channel" ;; esac
+# The mode is the relay's (vguard); a server without one has nothing to apply it to.
+access_on() { has relay && [ "$ACCESS_MODE" != open ]; }
+if [ "$ACCESS_MODE" != open ] && ! has relay; then
+    warn "ACCESS_MODE=$ACCESS_MODE: this server has no relay, and the mode is the relay's; nothing here changes"
+fi
+if access_on; then
+    [ -n "$ADMIN_PUBKEY" ] || die "ACCESS_MODE=$ACCESS_MODE needs ADMIN_PUBKEY, the owner's nostr key (npub or 64 hex), in server.conf: the one member a $ACCESS_MODE server always admits; set it and rerun, or ACCESS_MODE=open"
+    admin_re='^(npub1[02-9ac-hj-np-z]{58}|[0-9a-f]{64})$'
+    [[ "$ADMIN_PUBKEY" =~ $admin_re ]] || die "ADMIN_PUBKEY: an npub or 64 hex digits (lowercase), not \"$ADMIN_PUBKEY\""
+fi
 RELAY_RETENTION_DAYS=${RELAY_RETENTION_DAYS:-90}
 days_re='^[0-9]{1,4}$'
 [[ "$RELAY_RETENTION_DAYS" =~ $days_re ]] || die "RELAY_RETENTION_DAYS: a number of days, 0 to keep for ever"
@@ -421,6 +450,9 @@ done
 if has relay && [[ " $MESH_RELAY_FQDNS" != *" $RELAY_FQDN "* ]]; then
     die "$RELAY_FQDN is not in MESH_RELAYS ($MESH_RELAYS): add it there (on every server) or fix the name"
 fi
+# Members and invites live in the vguard of one relay: the other relays of
+# the network neither know them nor ask for them.
+if access_on && [ -n "$PEERS" ]; then warn "$(msg warn_access_many_relays)"; fi
 MESH_MEDIA_FQDNS=""
 for m in $MESH_MEDIA; do MESH_MEDIA_FQDNS+="$(fqdn "$m") "; done
 if has media && renamed "$MESH_MEDIA_FQDNS" "$MEDIA_FQDN" "$MEDIA_ALIAS_FQDNS"; then
@@ -476,6 +508,7 @@ sites_wanted && say "network $NETWORK ($BASE_DOMAIN): relays $MESH_RELAY_FQDNS| 
 say "this server: $SERVER, region $REGION, components: $COMPONENTS"
 [ -n "$ALIAS_HOSTS" ] && say "also answers as: $ALIAS_HOSTS(certificates once their DNS points here)"
 has relay && say "relay  wss://$RELAY_FQDN  peers: ${PEERS:-none}  push of the Veydan network: $PUSH_GATEWAY$VPUSH_ADDED$VPUSH_NOTE"
+has relay && say "access $ACCESS_MODE${ADMIN_PUBKEY:+  owner: $ADMIN_PUBKEY}"
 if has media; then
     if [ -n "$S3_ENDPOINT" ]; then
         say "media  https://$MEDIA_FQDN  (files in the bucket $S3_BUCKET at $S3_ENDPOINT, index here)"

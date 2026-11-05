@@ -50,7 +50,9 @@ ACME_EMAIL=
 # none: the firewall is left as it is.
 FIREWALL=ufw
 
-# Admin's nostr pubkey (hex or npub) shown in NIP-11 of every relay. May be empty.
+# Admin's nostr pubkey (hex or npub) shown in NIP-11 of every relay. May be
+# empty, unless ACCESS_MODE below is team or channel: then it is the owner,
+# always a member, the one who invites.
 ADMIN_PUBKEY=
 
 # ---- this server -----------------------------------------------------------
@@ -90,6 +92,18 @@ PUSH_GATEWAY=off
 # required, or open. Not asked. A server installed before this setting keeps
 # open until it is set.
 MEDIA_UPLOAD_KEY=required
+
+# Who uses the relay: open (anyone who has the card of the server), team
+# (the owner, ADMIN_PUBKEY, and the people invited: veydan-server invite)
+# or channel (anyone reads without the key, members write: veydan-server
+# members add). Members and invites live in the vguard of this one relay,
+# so team and channel are for a server of one relay. Empty: team at the
+# first run of such a server (asked), open for a network of several relays
+# and for a server installed before the setting. Team and channel need
+# ADMIN_PUBKEY above and vguard 0.7.0 or later. Change later with:
+# veydan-server mode open|team|channel, then veydan-server rerun.
+# This sample says open, as its ADMIN_PUBKEY is empty.
+ACCESS_MODE=open
 
 # NIP-11 name of the relay. Empty: "<NETWORK> <relay name>".
 RELAY_NAME=

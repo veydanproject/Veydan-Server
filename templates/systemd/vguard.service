@@ -7,6 +7,8 @@ Wants=network-online.target strfry.service
 User=vguard
 Group=vguard
 ExecStart=/opt/vguard/bin/vguard serve --config /opt/vguard/etc/vguard.toml
+# The members and the invites read again (veydan-server members, invite).
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=2
 TimeoutStopSec=10
@@ -19,6 +21,9 @@ NoNewPrivileges=true
 CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=strict
+# A team or channel server: vguard writes its members and invites there
+# (the folder is its group's to write only then; components/guard.sh).
+ReadWritePaths=-/opt/vguard/data
 ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true

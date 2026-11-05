@@ -106,7 +106,7 @@ The key holds the keys of the network: give it to nobody else.
 The servers that were there before do not learn the new names by themselves: their relays accept the new one (it connects to them both ways), but their push servers watch only the relays they know.
 To tell them, add the new names to `MESH_RELAYS` and `MESH_MEDIA` in their `/opt/veydan/server.conf` and run `veydan-server rerun`.
 
-After the installer, `veydan-server` is on the server: `show` (the card), `join-token`, `add <component>`, `status`, `rerun`, `push veydan|off`, `media-key required|open`.
+After the installer, `veydan-server` is on the server: `show` (the card), `join-token`, `add <component>`, `status`, `rerun`, `push veydan|off`, `media-key required|open`, `upload-key`.
 
 - Every relay connects to every other relay and syncs with it every few minutes. An event published on one relay reaches all of them.
 - With an S3 bucket, every media server serves every file. A server that has not got a file asks the bucket by its hash, with a signed request.
@@ -227,10 +227,57 @@ The node's key and TURN secret are in `/opt/vcall/data/`. The key is the node's 
 The installer prints the same link at the end ("Link for the app").
 The link holds the app key: give it to the people who may use the server, and to nobody else.
 
-    veydan://server/<id>?u=<relay>&k=<app key>[&m=<media>][&c=<call node>][&pu=<push server>]&p=veydan|off&n=<network>
+    veydan://server/<id>?u=<relay>&k=<app key>[&m=<media>][&c=<call node>][&pu=<push server>]&p=veydan|off&n=<network>[&a=team|channel][&inv=<invite>]
 
 `<id>` is the first 16 hex digits of the sha256 of the relay address, so the app knows the server again from any card of it.
 `veydan-server card --contact <npub>` prints a link to a contact that carries the server along (`veydan://contact/<npub>?srv=…`), for a person who has no server of the network yet.
+On a team or channel server the card says so (`a=`), and `veydan-server card --invite <code>` puts an invite on it (`inv=`); with `--contact` the invite travels inside the link.
+
+## Access modes
+
+Who may use the relay of your server is its access mode, `ACCESS_MODE` in `server.conf`:
+
+| Mode | Who reads | Who writes | What the card does |
+|---|---|---|---|
+| `open` | anyone who has the card | anyone who has the card | adds the server |
+| `team` | members | members | adds the server; with an invite on it, makes its holder a member |
+| `channel` | anyone, without the key | members | the same; a link to a channel works without it |
+
+You, the owner (`ADMIN_PUBKEY`, your npub or hex key), are always a member and the one who invites.
+The first run of a server of one relay asks the mode, with `team` as the answer, and asks your key; a server of a network of several relays, one that joins a network, and a server installed before the setting stay `open`.
+
+```sh
+veydan-server mode team                     # or open, channel; then:
+veydan-server rerun
+veydan-server invite                        # the card with an invite for one person, valid 7 days
+veydan-server invite --uses 20 --days 30 --label sales
+veydan-server invite list                   # the invites, how often each was used
+veydan-server invite revoke <id>            # ends an invite
+veydan-server members list
+veydan-server members add <npub|hex>        # a member without an invite
+veydan-server members remove <npub|hex>     # no longer a member
+veydan-server card --invite <code>          # the card with an invite you already have
+```
+
+`invite` prints the card with the invite on it (`&inv=`), and the code alone on the next lines of the terminal for an app that asks for a code.
+The relay reads a change of the members or the invites at once.
+
+Two ways to use it:
+
+- **A blogger's channel.** `ACCESS_MODE=channel`: you post, and so do the people you make members (`veydan-server members add <npub>`, or an invite for your editors).
+  Anyone with a link to the channel reads it, with no card and no key; nobody but the members writes to the relay or uploads files.
+- **A company's team server.** `ACCESS_MODE=team`: send each colleague a card with an invite (`veydan-server invite --uses 1`, or one invite for the whole department with `--uses 30`).
+  The first app that opens it becomes a member; the card without an invite only adds the server, and the relay answers a person who is not a member nothing.
+  When someone leaves, `veydan-server members remove <npub>`.
+
+What to know:
+
+- The mode is per relay: members and invites live in the vguard of this one relay, and other relays of a network neither know nor ask for them. Use one relay per server; the installer warns when `MESH_RELAYS` names others.
+- Media: with `MEDIA_UPLOAD_KEY=required`, only a member uploads with the app key (nginx asks vguard about the signer of the upload); the other media servers (the peer key) and upload keys of the staff of a channel pass as before.
+- Downloads of media by their hash stay open in every mode: whoever has the hash of a file (it is inside the encrypted message) downloads it, as before.
+- Team and channel need vguard 0.7.0 or later. The installer stops when the vguard it has does not know the mode, so a team server never comes up open; until `VGUARD_VERSION` in `versions.conf` names that release, use a kit made by `make build-deploy`.
+- The owner's key comes from `ADMIN_PUBKEY`: a team or channel server is not installed without it.
+- Where it lives: `/opt/vguard/data/members.txt` (one key a line), `/opt/vguard/data/invites.json`, and the secret the invites are signed with, `/opt/vguard/etc/access.key` (made once and kept; a new one ends every invite).
 
 ## A private server for a team
 
@@ -248,6 +295,14 @@ veydan-server card
 
 The link holds the app key: give it to the people who may use the server and to nobody else.
 Media takes an upload only with the key of the server (`MEDIA_UPLOAD_KEY=required`, the default of a new install; `open` turns it off, and a server installed before the setting stays `open`).
+The staff of a channel who have not got the card get upload keys from the owner's app: each lets one person upload and delete their own files on your media for at most 31 days, nothing else, and the app revokes it when the person loses the role.
+On the server:
+
+```sh
+veydan-server upload-key <label> <pubkey hex> [days]   # a key for one person (30 days by default)
+veydan-server upload-key revoke <label> <pubkey hex>   # ends every key of that person made until now
+veydan-server upload-key list                          # the revoked
+```
 
 ### You and a colleague who is in the Veydan network
 
@@ -294,7 +349,7 @@ The app cannot turn it on from the card in this version: the card says `p=veydan
 
 ### What is not there yet
 
-- Everyone who has the card has the same app key: you cannot let one person in and keep another out without changing the key for everybody. A list of allowed keys is planned.
+- On an `open` server everyone who has the card has the same app key: you cannot let one person in and keep another out without changing the key for everybody. A `team` server lets in its members alone ("Access modes" above).
 - There is no UnifiedPush.
 - Bridges do not work with a private server.
 
@@ -303,7 +358,7 @@ The app cannot turn it on from the card in this version: the card says `p=veydan
 | Component | Path | Kept on a rerun (a changed template is put beside it as `*.new`) | Rewritten on every run |
 |---|---|---|---|
 | Relay | `/opt/strfry` | `etc/strfry.conf`; the database | the systemd units, the router and sync settings |
-| Relay: read policy | `/opt/vguard` | your lines outside the kit block of `etc/vguard.toml` | the kit block of `vguard.toml`, the unit |
+| Relay: read policy | `/opt/vguard` | your lines outside the kit block of `etc/vguard.toml`; `etc/access.key`, `data/members.txt`, `data/invites.json` (team, channel) | the kit block of `vguard.toml`, the unit |
 | Media | `/opt/blossom` | `etc/config.yml` (its rules come from `etc/rules.yml` when there is one) | the units; `etc/blossom.env` (S3 keys) |
 | Media index | `/opt/libsql` | the data in `data/` | the unit |
 | Push | `/opt/vpush` | your lines outside the kit block of `etc/vpush.toml`; `etc/secrets/` | the kit block of `vpush.toml`, the unit |
@@ -321,7 +376,7 @@ How the programs arrive:
 - Deno and sqld are downloaded from their GitHub releases and checked by sha256 from `versions.conf`.
 - blossom-server is cloned at a pinned commit.
 - VPush and the call node come as binaries in the kit, or from their releases on GitHub (the versions in `versions.conf`, checked by the `SHA256SUMS` of the release and by the signature of the Veydan Project, `<file>.sig`) when the kit brings none. x86_64 only.
-- vguard, the read policy of the relay, comes the same way: `bin/vguard` of the kit (`make build-deploy` builds it with VPush), or the release of Veydan-Push named by `VGUARD_VERSION` (`vguard-linux-<arch>` with its signature). A relay is never put up without it: when neither is there and none is installed, the installer stops before it changes anything and names `VGUARD_VERSION`.
+- vguard, the read policy of the relay, comes the same way: `bin/vguard` of the kit (`make build-deploy` builds it), or the release of Veydan-Guard named by `VGUARD_VERSION` (`vguard-linux-<arch>` with its signature). A relay is never put up without it: when neither is there and none is installed, the installer stops before it changes anything and names `VGUARD_VERSION`.
 
 ## Cloudflare
 
@@ -370,6 +425,7 @@ Last test: publish an event on one relay and read it from another; upload a file
 - The database of a relay does not shrink when the retention timer deletes old events: the file keeps its size and the freed pages are used again. Watch the disk (`df -h /opt/strfry`) until the first week has passed.
 - `MEDIA_UPLOAD_KEY=required` (the default of a new install) turns the check below on; `open` turns it off, and a server installed before the setting existed stays `open`. The network of Veydan keeps uploads open until the apps carry the key. A server handed out with `veydan-server card` should be `required`: while it is `open`, anyone with a nostr key can upload, and the installer and the card say so on every run (a warning on stderr). `veydan-server media-key required` sets it, then `veydan-server rerun`.
 - Media takes anything but a download of a blob by its hash, the list of a key, the index and the CORS preflight (an upload, a mirror, a delete; the case of the path does not matter) only with the key of the server, as the relay does: `?key=` or the header `X-API-Key`, the app key or the peer key (the other media servers). Without it nginx answers 401. The app takes the key from the card of the server. Downloads and the list stay open. The key is inside the app, so this keeps strangers off, not people who have the app; an upload is still signed by the nostr key of its author. Nginx limits the request rate, and a request to 20 MiB.
+- An upload key (`vu1.<label>.<pubkey>.<iat>.<exp>.<mac>`, made by the owner's app or `veydan-server upload-key`) is the one exception: it lets `PUT`/`HEAD /upload` and `DELETE /<sha256>` through on the host it was made for, when the upload is signed by the nostr key it names, until it expires (at most 31 days) or is revoked (`POST /.well-known/veydan-media/revoke?label=&pubkey=` with the app key, or `veydan-server upload-key revoke`). It never opens the relay, a mirror or anything else. `GET /.well-known/veydan-media` tells the app whether uploads need a key.
 - The app key is inside the app, so anyone who has the app can query a relay with it. Message content stays encrypted. vguard gives gift wraps (kind 1059) only to the key that signed in (NIP-42) and events of groups (kind 9) only by `#h`; what else is on a relay (profiles, follow and relay lists) is public, as on any relay. A relay without vguard would give everything to the app key, metadata included: the kit puts up no relay without it.
 - The strfry router does not check the TLS certificate of the other relay and writes its URL, with the peer key, to the journal. Keep the path between your servers trusted.
 - The media index is per server. Without a shared bucket, a file is lost for the network if its server is gone.

@@ -46,7 +46,7 @@ release_component() {
         vlink) echo link ;;
         vcall) echo call ;;
         vpush) echo vpush ;;
-        vguard) echo vguard ;;   # in the release of Veydan-Push, signed apart from vpush
+        vguard) echo vguard ;;   # its own release since 0.6.0 (Veydan-Guard); in Veydan-Push's before, signed apart from vpush
         *) echo "$1" ;;
     esac
 }

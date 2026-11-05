@@ -41,6 +41,9 @@ vcall_release=""
 [ -f "$HERE/bin/vcall.RELEASE" ] && vcall_release=$(cat "$HERE/bin/vcall.RELEASE")
 media_store=disk
 [ -n "$S3_ENDPOINT" ] && media_store="$S3_ENDPOINT/$S3_BUCKET"
+# Who uses the relay (ACCESS_MODE; open on a server without one).
+access=open
+access_on && access=$ACCESS_MODE
 
 json=$(jq -n \
     --arg generated "$(date -u +%FT%TZ)" --arg base "$BASE_DOMAIN" --arg network "$NETWORK" \
@@ -51,9 +54,11 @@ json=$(jq -n \
     --argjson peers "$peers" --argjson media_peers "$media_peers" --arg media_store "$media_store" \
     --arg strfry "$STRFRY_TAG ($STRFRY_COMMIT)" --arg blossom "$BLOSSOM_COMMIT (deno $DENO_VERSION)" \
     --arg libsql "$LIBSQL_VERSION" --arg vpush "$vpush_release" --arg vcall "$vcall_release" \
+    --arg access "$access" \
     '{
       generated_at: $generated, base_domain: $base, network: $network, server: $server, region: $region,
       components: ($components | split(" ")),
+      access: $access,
       manifest: {
         relays: [$relay | select(. != null)],
         media:  [$media | select(. != null)],
@@ -76,9 +81,12 @@ printf '%s\n' "$json" | put "$STATE/manifest-node.json" 0600 root:root
 
 # The link the app takes (veydan-server card): one maker for it, the command
 # itself, reading the files just written. Only a server with a relay has one.
+# The first run of a team server: with its first invite (components/guard.sh).
 CARD_LINK=""
 if has relay; then
-    CARD_LINK=$(VEYDAN_STATE=$(target "$STATE") bash "$HERE/templates/veydan-server" card 2>/dev/null) || CARD_LINK=""
+    card_args=(card)
+    [ -z "${FIRST_INVITE:-}" ] || card_args+=(--invite "$FIRST_INVITE")
+    CARD_LINK=$(VEYDAN_STATE=$(target "$STATE") bash "$HERE/templates/veydan-server" "${card_args[@]}" 2>/dev/null) || CARD_LINK=""
 fi
 
 # The card: what the admin needs, in their language.
@@ -89,7 +97,9 @@ card() {
     has vpush && printf '  %-7s https://%s\n' "$(msg card_push)" "$VPUSH_FQDN"
     has call  && printf '  %-7s %s\n' "$(msg card_call)" "$CALL_REF"
     has relay && echo "$(msg card_app)"
+    has relay && echo "$(msg "card_access_$access")"
     [ -z "$CARD_LINK" ] || echo "$(msg card_link): $CARD_LINK"
+    [ -z "${FIRST_INVITE:-}" ] || echo "$(msg card_access_invite): $FIRST_INVITE"
     has media && echo "$(msg card_media_key)"
     if has vpush; then
         # Woken through the gateway, or with the keys of FCM of its own apps.
@@ -113,6 +123,10 @@ card() {
     echo "App key (in the manifest of every relay):  $MESH_APP_KEY"
     echo "   wss://<relay>/?key=<key>   or header   X-API-Key: <key>"
     has media && echo "   the same on media: an upload (PUT/HEAD /upload, /mirror, DELETE of a blob) needs it; a download does not"
+    if has media && [ "$access" != open ] && [ "$MEDIA_UPLOAD_KEY" = required ]; then
+        echo "   $access: with the app key only a member uploads (nginx asks vguard); the peer key and upload keys as before"
+    fi
+    [ "$access" != channel ] || echo "   channel: the relay answers without the key; vguard lets anyone read and members write"
     echo "Peer key (relay ↔ relay, vpush → relay):   $MESH_PEER_KEY"
     echo
     echo "== This server =="

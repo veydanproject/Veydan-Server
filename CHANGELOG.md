@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.9
+
+A server with a relay has an access mode, `ACCESS_MODE`: `open` (anyone who has the card uses it, as before), `team` (the owner and the people invited) or `channel` (anyone reads without the key, members write).
+The first run of a server of one relay asks it, with `team`, and asks the owner's nostr key (`ADMIN_PUBKEY`), who is always a member; a server of a network of several relays, one that joins a network, and a server installed before the setting stay `open`.
+Membership lives in the vguard of the relay (`[access]` of `vguard.toml`: the members in `/opt/vguard/data/members.txt`, the invites in `data/invites.json`, their secret in `/opt/vguard/etc/access.key`, made once and kept); an `open` server writes no `[access]` at all.
+vguard writes the two lists itself, so on a team or channel server `/opt/vguard/data` is `0770 root:vguard` (`0750` otherwise), its unit may write there (`ReadWritePaths`), and `systemctl reload vguard` makes it read them again (`veydan-server` does it after every change).
+Team and channel need a vguard that takes `[access]`, 0.7.0 or later: the kit stops, naming `VGUARD_VERSION`, when the vguard at hand refuses it, so a team server never comes up open.
+vguard comes from its own release, Veydan-Guard (`VGUARD_VERSION=0.7.0`, `vguard-linux-<arch>` signed as `vguard`); releases 0.4.0–0.5.1 rode with Veydan-Push.
+The programs of the releases: VCall 0.1.4, VPush 0.6.0 (without vguard), vguard 0.7.0, VLink 0.4.0 for a bridge — all built on Veydan Common.
+The first run of a team server makes the first invite (one person, 7 days) and prints the card that carries it.
+
+The relay site serves the API of vguard under `/.well-known/veydan-access/` without a key (join by an invite, the members, the invites).
+A channel server's relay answers without the app key, since a link to a channel carries none; vguard lets anyone read and members write.
+On a team or channel server with `MEDIA_UPLOAD_KEY=required`, the app key alone no longer uploads: nginx asks vguard whether the signer of the upload is a member (`auth_request`); the peer key and an upload key pass as before, and a download by the hash stays open.
+`GET /.well-known/veydan-media` says `"access":"team"` or `"channel"`.
+
+`veydan-server mode open|team|channel` changes the mode (then `veydan-server rerun`); `veydan-server invite [--uses N] [--days D] [--label L]` prints the card with the invite, `invite list` and `invite revoke <id>` show and end them; `veydan-server members list|add|remove <npub|hex>` keeps the list; `veydan-server card --invite <code>` puts a code on the card.
+The card of a team or channel server says so (`&a=team`, `&a=channel`) and carries an invite as `&inv=<code>`; the card of an open server is as it was.
+
+## 0.1.8
+
+Upload keys for the media of a private server (`MEDIA_UPLOAD_KEY=required`): the owner's app gives the staff of a channel a key of their own, `vu1.…`, made with the app key, that lets one person upload (`PUT`/`HEAD /upload`) and delete (`DELETE /<sha256>`) on this host and nothing else, for at most 31 days; the upload must be signed by that person's nostr key, and the key never opens the relay.
+The owner's app ends the keys of a person with `POST /.well-known/veydan-media/revoke` (the app key only); on the server, `veydan-server upload-key <label> <pubkey> [days]` makes one, `veydan-server upload-key revoke <label> <pubkey>` ends them and `veydan-server upload-key list` shows the revoked.
+`GET /.well-known/veydan-media` tells the app what an upload needs: `{"v":1,"upload":"key","scoped":1}` or `{"v":1,"upload":"open"}`.
+The check runs in nginx (`templates/njs/upload.js`); the revocations live in `/opt/veydan/media-keys`.
+
+The relay may use at most 60 % of the memory of the machine (`MemoryMax` of `strfry.service`): a client that asked for more than it read made strfry hold gigabytes for it, and the kernel then killed processes of the whole server; now only the relay is restarted.
+
+The programs of the releases: VCall 0.1.3, VPush and vguard 0.5.1 (tokio 1.54.1, RUSTSEC-2026-0386), VLink 0.3.5 for a bridge (it was still 0.3.2); in their images the agent of the project's monitoring is on unless `VEYDAN_AGENT=off`.
+
 ## 0.1.7
 
 A server with media that is still `open` says so at every run of the installer and on `veydan-server card`; `veydan-server media-key required|open` changes the setting (then `veydan-server rerun`), and the check now refuses everything but a download, the list, the index and the CORS preflight, whatever the case of the path.
