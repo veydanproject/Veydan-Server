@@ -12,7 +12,9 @@
 # and, on a team or channel server (ACCESS_MODE), the [access] of vguard:
 #   etc/access.key  data/members.txt  data/invites.json
 # Part of the relay; sourced by run.sh after strfry.sh. Sets V_RELAY_WS,
-# where nginx sends the WebSockets of the relay.
+# where nginx sends the WebSockets of the relay. The engine vrelay has none
+# of it (components/vrelay.sh: vrelay is its own read policy and keeps its
+# members and invites itself).
 
 G=/opt/vguard
 V_RELAY_WS=127.0.0.1:7777
@@ -83,8 +85,14 @@ if access_on; then
         openssl rand -hex 32 | put "$G/etc/access.key" 0640 root:vguard
         say "vguard: $G/etc/access.key made (the secret of the invites; keep it)"
     fi
-    [ -e "$(target "$G/data/members.txt")" ] || : | put "$G/data/members.txt" 0660 root:vguard
-    [ -e "$(target "$G/data/invites.json")" ] || echo '[]' | put "$G/data/invites.json" 0660 root:vguard
+    # vguard writes them (a new file renamed over the old, its own): they
+    # are its user's, and the group's; vrelay of an older kit wrote them too.
+    # The folder is vguard's to write, so root never works there by a path:
+    # put writes as vguard, the mode is set as vguard, the owner with
+    # chown -h (never through a link); a link there is told and left.
+    [ -e "$(target "$G/data/members.txt")" ] || [ -L "$(target "$G/data/members.txt")" ] || : | put "$G/data/members.txt" 0660 vguard:vguard
+    [ -e "$(target "$G/data/invites.json")" ] || [ -L "$(target "$G/data/invites.json")" ] || echo '[]' | put "$G/data/invites.json" 0660 vguard:vguard
+    own_files "$G/data" vguard 0660 members.txt invites.json access.lock
     V_GUARD_ACCESS=$(cat <<EOF
 # Who uses the relay (ACCESS_MODE of server.conf): veydan-server mode,
 # members, invite. The owner is always admitted.

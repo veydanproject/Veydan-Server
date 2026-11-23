@@ -1,0 +1,40 @@
+# The settings of the store and the bus of a server of the mesh (mesh.yaml in
+# this folder). Made by run.sh (components/vrelay.sh, lib/mesh.sh) from
+# server.conf and versions.conf; edits are lost on the next run.
+COMPOSE_PROJECT_NAME=vrelay
+VEYDAN_SECRETS_DIR=${V_COMPOSE_SECRETS}
+
+# Images: a version and its digest (versions.conf).
+CASSANDRA_TAG=${V_CASSANDRA_TAG}
+NATS_TAG=${V_NATS_TAG}
+
+# This server in the mesh: its address on wg0, where every port of the two
+# listens (but JMX and the page of NATS, on loopback).
+MESH_IP=${V_MESH_IP}
+
+# Cassandra: a node of the cluster ${V_CASSANDRA_CLUSTER}, the datacenter of
+# its region (RELAY_DC, fixed at the first start of the node), the seeds the
+# same on every server (RELAY_STORE_SEEDS, or the first server of each
+# region), its heap from the memory of the machine.
+CASSANDRA_UID=${V_CASSANDRA_UID}
+CASSANDRA_GID=${V_CASSANDRA_GID}
+CASSANDRA_DATA_DIR=${V_CASSANDRA_DATA}
+CASSANDRA_LOG_DIR=${V_CASSANDRA_LOGS}
+CASSANDRA_CLUSTER_NAME=${V_CASSANDRA_CLUSTER}
+CASSANDRA_DC=${V_RELAY_DC}
+CASSANDRA_RACK=r1
+CASSANDRA_SEEDS=${V_CASSANDRA_SEEDS}
+CASSANDRA_HEAP=${V_CASSANDRA_HEAP}
+CASSANDRA_DIRECT=${V_CASSANDRA_DIRECT}
+CASSANDRA_MEM_LIMIT=${V_CASSANDRA_MEM_LIMIT}
+CASSANDRA_USER=veydan
+CASSANDRA_APP_USER=vrelay
+VRELAY_KEYSPACE=vrelay
+
+# NATS of the region: its config is secrets/nats/nats.conf.
+NATS_UID=${V_NATS_UID}
+NATS_GID=${V_NATS_GID}
+NATS_DATA_DIR=${V_NATS_DATA}
+# Its memory, from the machine (components/vrelay.sh, spec/tuning.md 6).
+NATS_MEM_LIMIT=${V_NATS_MEM_LIMIT}
+NATS_GOMEMLIMIT=${V_NATS_GOMEMLIMIT}

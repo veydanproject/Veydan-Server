@@ -1,0 +1,15 @@
+[Unit]
+# The second lock of the relay's containers (/opt/vrelay/bin/vrelay-docker-lock.sh):
+# put after docker every time docker starts, before the containers are
+# reached from outside.
+Description=vrelay: nothing from outside into the containers of the store and the bus (DOCKER-USER)
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/vrelay/bin/vrelay-docker-lock.sh
+
+[Install]
+WantedBy=docker.service

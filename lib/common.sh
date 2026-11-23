@@ -24,34 +24,122 @@ run() {
 # The path a file really goes to (under $DRY_ROOT on --dry-run).
 target() { printf '%s%s' "$DRY_ROOT" "$1"; }
 
+# Root never works by a path inside a folder another user may write: that
+# user could put a link there, and root would write, own or read what it
+# points to. Whether nobody but root can change a folder and the folders
+# above it (a folder with the sticky bit, /tmp, counts as root's).
+root_only_dir() { # root_only_dir <dir>
+    local d=$1 s
+    # Not root (the kit run against a staged root by its tests): there is no
+    # right of root for a link to borrow.
+    [ "$(id -u)" = 0 ] || return 0
+    while :; do
+        [ ! -L "$d" ] || return 1
+        s=$(stat -c '%u %a' -- "$d" 2>/dev/null) || return 1
+        [ "${s%% *}" = 0 ] || return 1
+        # Group or others may write: only with the sticky bit.
+        [ $((8#${s#* } & 8#022)) = 0 ] || [ $((8#${s#* } & 8#1000)) != 0 ] || return 1
+        [ "$d" != / ] || return 0
+        d=$(dirname -- "$d")
+    done
+}
+
+# A command as the user of a folder that is not root's alone: what a link
+# planted there could reach, that user reaches by itself anyway.
+as_user() { # as_user <user> <command>...
+    local u=$1; shift
+    [ "$u" != root ] && [ "$u" != 0 ] || die "the kit's mistake: root was to work in a folder another user may write ($*)"
+    runuser -u "$u" -- "$@"
+}
+
 mkdirp() { # mkdirp <dir> <mode> <owner:group>
     local d; d=$(target "$1")
-    mkdir -p "$d"
-    [ "$DRY" = 1 ] && return 0
-    chmod "$2" "$d"
-    chown "$3" "$d"
+    if [ "$DRY" = 1 ]; then mkdir -p "$d"; return 0; fi
+    if root_only_dir "$(dirname -- "$d")"; then
+        mkdir -p "$d"
+        chmod "$2" "$d"
+        chown "$3" "$d"
+        return 0
+    fi
+    # Its folder is another user's: made and set by the owner it is for.
+    [ ! -L "$d" ] || die "$1 is a symbolic link in a folder another user may write: the kit follows none; move it away and run again"
+    as_user "${3%%:*}" mkdir -p "$d"
+    as_user "${3%%:*}" chmod "$2" "$d"
+    as_user "${3%%:*}" chgrp "${3#*:}" "$d"
 }
 
 # put <dest> <mode> <owner:group>   (content on stdin)
+#
+# A new file renamed over the old one: a link or a file at <dest> is
+# replaced, never followed (mv -T: a folder there is refused). In a folder
+# another user may write (the access files of the relay, the secrets of
+# vpush) the file is written by its owner, who can write the folder.
 put() {
     local dest; dest=$(target "$1")
     mkdir -p "$(dirname "$dest")"
+    if [ "$DRY" != 1 ] && ! root_only_dir "$(dirname -- "$dest")"; then
+        # shellcheck disable=SC2016  # the script of the owner, its own $1..$3
+        as_user "${3%%:*}" sh -c 'umask 077; t=$(mktemp "$(dirname "$1")/.put.XXXXXX") || exit 1
+            if cat > "$t" && chmod "$2" "$t" && chgrp "$3" "$t" && mv -fT "$t" "$1"; then exit 0; fi
+            rm -f "$t"; exit 1' put "$dest" "$2" "${3#*:}" \
+            || die "put: $1 could not be written as ${3%%:*}"
+        return 0
+    fi
     local tmp; tmp=$(mktemp "$(dirname "$dest")/.put.XXXXXX")
     cat > "$tmp"
     if [ "$DRY" != 1 ]; then
         chmod "$2" "$tmp"
         chown "$3" "$tmp"
     fi
-    mv -f "$tmp" "$dest"
+    mv -fT "$tmp" "$dest"
+}
+
+# A file of a folder another user may write, read as that user: a link
+# planted there gives nothing that user could not read itself.
+read_as() { # read_as <user> <path>
+    if [ "$DRY" = 1 ]; then cat -- "$(target "$2")"; return; fi
+    as_user "$1" cat -- "$2"
+}
+
+# A regular file, not a link (the test of a path in another user's folder).
+plain_file() { [ -f "$(target "$1")" ] && [ ! -L "$(target "$1")" ]; }
+
+# The files of a service in a folder it writes (the access files of the
+# relay), given back to it on every run without root following a link put
+# there: a link is told and left; the owner is set with chown -h (the
+# entry itself, never what it points to); the mode by the user, who can
+# change only its own files.
+own_files() { # own_files <dir> <user> <mode> <file>...
+    local dir=$1 u=$2 mode=$3 f p; shift 3
+    for f in "$@"; do
+        p=$(target "$dir/$f")
+        if [ -L "$p" ]; then
+            warn "$dir/$f is a symbolic link: the kit follows none and leaves it; $u writes the file itself, so a link there was put by somebody else. Look at it (ls -l $dir), remove it, and run again"
+            continue
+        fi
+        [ -e "$p" ] || continue
+        [ -f "$p" ] || { warn "$dir/$f is not a file: left as it is"; continue; }
+        if [ "$DRY" = 1 ]; then
+            run chown -h "$u:$u" "$dir/$f"
+            run runuser -u "$u" -- chmod "$mode" "$dir/$f"
+            continue
+        fi
+        [ "$(stat -c %U -- "$p")" = "$u" ] || chown -h "$u:$u" "$p"
+        runuser -u "$u" -- chmod "$mode" "$p"
+    done
 }
 
 # Template variables are the shell variables named V_*. Only those are
 # replaced, so nginx's $host and the like stay as they are.
 render_text() { # render_text <template>
-    local vars
-    vars=$(compgen -v V_ | sed 's/.*/${&}/' | tr '\n' ' ')
-    # shellcheck disable=SC2046
-    export $(compgen -v V_)
+    local vars names
+    names=$(compgen -v V_ || true)
+    # No V_ variable yet: a bare `export` would print the environment into
+    # the text, and envsubst without a list would replace every variable.
+    [ -n "$names" ] || { cat "$1"; return 0; }
+    vars=$(printf '%s\n' $names | sed 's/.*/${&}/' | tr '\n' ' ')
+    # shellcheck disable=SC2086,SC2163  # the names, split on purpose
+    export $names
     envsubst "$vars" < "$1"
 }
 
@@ -185,6 +273,20 @@ fetch_program() {
     say "$prog: $version from the release of $repo"
 }
 
+# The store and the bus of the vrelay engine: docker compose over the
+# relay's own compose.yaml and the kit's layer (templates/relay-compose).
+VRELAY_COMPOSE=/opt/vrelay/compose
+vrelay_compose() {
+    # A server of the mesh: mesh.yaml alone, the host's network (lib/mesh.sh).
+    if [ -f "$(target "$VRELAY_COMPOSE/mesh.yaml")" ]; then
+        run docker compose --project-directory "$VRELAY_COMPOSE" --env-file "$VRELAY_COMPOSE/.env" \
+            -f "$VRELAY_COMPOSE/mesh.yaml" "$@"
+        return
+    fi
+    run docker compose --project-directory "$VRELAY_COMPOSE" --env-file "$VRELAY_COMPOSE/.env" \
+        -f "$VRELAY_COMPOSE/compose.yaml" -f "$VRELAY_COMPOSE/compose.kit.yaml" "$@"
+}
+
 # "relay" → "relay.example.org"; a name with a dot is taken as it is.
 fqdn() {
     case "$1" in
@@ -264,4 +366,95 @@ origin_of() { # origin_of <fqdn>
         case "$1" in "${o%%=*}"-*) printf '%s' "${o#*=}"; return 0 ;; esac
     done
     return 1
+}
+
+# The memory of a server of vrelay, in MB (README, "The vrelay engine": the
+# table of 8, 16 and 32 GB). Every program gets a limit, and the limits add
+# up to the machine: Cassandra's container (its heap, its direct buffers,
+# the memtables off the heap, the JVM's own, a share of page cache), NATS's
+# container, the units of vrelay write and vrelay serve, and what has no
+# limit of its own (the system, nginx, the media server, vpush, a call
+# node). What serve's limit holds is the default of RELAY_MAX_CONNECTIONS.
+#   vrelay_memory <MemTotal MB> [<heap MB>] [<components>]
+# sets MEM_HEAP MEM_DIRECT MEM_PAGE MEM_CASSANDRA MEM_NATS MEM_GOMEMLIMIT
+# MEM_WRITE MEM_OTHERS MEM_NGINX MEM_SERVE MEM_CONNECTIONS, and MEM_SHORT:
+# the MB the machine lacks for the estimate of the programs without a
+# limit (0 when it has them).
+VRELAY_SERVE_KB_PER_CONN=96   # measured: about 80 KB a connection of vrelay serve at 35 000
+VRELAY_NGINX_KB_PER_CONN=40   # not measured: nginx's TLS and its two sockets of a WebSocket
+vrelay_memory() {
+    local mem=$1 heap=${2:-} comps=" ${3:-relay} " avail per
+    _vm_clamp() { local v=$1; [ "$v" -ge "$2" ] || v=$2; [ "$v" -le "$3" ] || v=$3; printf '%s' "$v"; }
+    # From 32 768 MB of MemTotal on the machine is taken for a node of the
+    # database (a "32 GB" machine shows 31 900 to 32 900 MB: either side).
+    # The heap: a fifth of a machine below 32 GB, which runs everything, 1.5
+    # to 4 GB; a quarter of a larger one, a node of the database, at most
+    # 16 GB (G1, the memtables off the heap). Cassandra 5.0's own
+    # cassandra-env.sh would take half the machine.
+    if [ -z "$heap" ]; then
+        if [ "$mem" -lt 32768 ]; then heap=$(_vm_clamp $((mem / 5 / 256 * 256)) 1536 4096)
+        else heap=$(_vm_clamp $((mem / 4 / 256 * 256)) 1536 16384); fi
+    fi
+    MEM_HEAP=$heap
+    # The direct buffers (the chunk cache, the network): half the heap,
+    # given (-XX:MaxDirectMemorySize): the image counts them from the memory
+    # of the host, not of the container.
+    MEM_DIRECT=$((heap / 2))
+    # What has no limit: the system (the kernel, sshd, journald, docker,
+    # chrony) and each other component of this server; nginx below, by the
+    # connections. Not measured: estimates.
+    MEM_OTHERS=768
+    [[ "$comps" == *" media "* ]] && MEM_OTHERS=$((MEM_OTHERS + 512))   # blossom and sqld
+    [[ "$comps" == *" vpush "* ]] && MEM_OTHERS=$((MEM_OTHERS + 256))
+    [[ "$comps" == *" call "* ]] && MEM_OTHERS=$((MEM_OTHERS + 768))
+    if [ "$mem" -lt 32768 ]; then
+        # NATS: a quarter of what is above 4 GB, 1 to 6 GB (3 GB on 16 GB).
+        # At 35 000 connections it held 0.8-0.9 GB, a subscription a live
+        # key; with Go's soft limit at 768 MiB its collector ran without
+        # pause. The soft limit four fifths of the container.
+        MEM_NATS=$(_vm_clamp $(((mem - 4096) / 4)) 1024 6144)
+        # The container of Cassandra holds its page cache too (the kernel
+        # charges the pages of its files to it): the heap, the direct
+        # buffers, the memtables off the heap (a quarter of the heap), 1 GB
+        # of the JVM's own (metaspace, code, threads, the bloom filters and
+        # compression metadata of a young store) and a twentieth of the
+        # machine of page cache (384 MB to 2 GB; the rest of the page cache
+        # is what the others leave).
+        MEM_PAGE=$(_vm_clamp $((mem / 20)) 384 2048)
+        MEM_CASSANDRA=$((heap + MEM_DIRECT + heap / 4 + 1024 + MEM_PAGE))
+        MEM_WRITE=$(_vm_clamp $((mem / 16)) 512 2048)
+        # The rest is the clients': vrelay serve and nginx, by what a
+        # connection takes of each.
+        avail=$((mem - MEM_CASSANDRA - MEM_NATS - MEM_WRITE - MEM_OTHERS))
+        per=$((VRELAY_SERVE_KB_PER_CONN + VRELAY_NGINX_KB_PER_CONN))
+        MEM_SERVE=$((avail * VRELAY_SERVE_KB_PER_CONN / per))
+    else
+        # A node of the database: NATS an eighth (at most 8 GB, the presence
+        # of a region is in its memory), serve 4 GB, the writer 2 GB, the
+        # rest Cassandra's.
+        MEM_NATS=$(_vm_clamp $((mem / 8)) 1024 8192)
+        MEM_WRITE=2048
+        MEM_SERVE=4096
+        avail=$((MEM_SERVE * (VRELAY_SERVE_KB_PER_CONN + VRELAY_NGINX_KB_PER_CONN) / VRELAY_SERVE_KB_PER_CONN))
+        MEM_CASSANDRA=$((mem - MEM_NATS - MEM_WRITE - MEM_OTHERS - avail))
+        MEM_PAGE=$((MEM_CASSANDRA - heap - MEM_DIRECT - heap / 4 - 1024))
+    fi
+    MEM_GOMEMLIMIT=$((MEM_NATS * 4 / 5))
+    # serve has 768 MB at least. On a small machine with several components
+    # the estimates of the others are then not all there; the page cache in
+    # Cassandra's limit gives way first (the kernel takes it back), and what
+    # is short past it is MEM_SHORT.
+    MEM_SHORT=0
+    if [ "$MEM_SERVE" -lt 768 ]; then
+        MEM_SHORT=$(((768 - MEM_SERVE) * (VRELAY_SERVE_KB_PER_CONN + VRELAY_NGINX_KB_PER_CONN) / VRELAY_SERVE_KB_PER_CONN - MEM_PAGE))
+        [ "$MEM_SHORT" -ge 0 ] || MEM_SHORT=0
+        MEM_SERVE=768
+    fi
+    MEM_NGINX=$((MEM_SERVE * VRELAY_NGINX_KB_PER_CONN / VRELAY_SERVE_KB_PER_CONN))
+    # What serve's limit holds, in thousands; at most 50 000 (no load test
+    # went past 35 000, and the CPU of the machine is the other bound: a
+    # larger number is RELAY_MAX_CONNECTIONS of server.conf).
+    MEM_CONNECTIONS=$((MEM_SERVE * 1024 / VRELAY_SERVE_KB_PER_CONN / 1000 * 1000))
+    [ "$MEM_CONNECTIONS" -le 50000 ] || MEM_CONNECTIONS=50000
+    unset -f _vm_clamp
 }

@@ -1,0 +1,117 @@
+# The kit's layer over compose.yaml (a copy of services/relay/deploy, word
+# for word): what a server of the kit changes, and why. Run as
+#   docker compose -f compose.yaml -f compose.kit.yaml ...
+# by components/vrelay.sh and veydan-server; the values are in .env, which
+# the kit writes from server.conf.
+#
+# - The data is on the host disk, bind-mounted: ${CASSANDRA_DATA_DIR} and
+#   ${NATS_DATA_DIR} (under /opt/vrelay/data), not in docker's volumes.
+# - vrelay runs on the host (systemd), not in this stack: Cassandra and NATS
+#   are published on 127.0.0.1 only, and the driver of Cassandra is told
+#   that address (CASSANDRA_BROADCAST_RPC_ADDRESS), as README of the relay
+#   says for a node in docker.
+# - Roles and rights: the kit's own kit/cassandra-init.sh replaces the
+#   default superuser by ours and gives vrelay a role of its own, with
+#   SELECT and MODIFY on its keyspace alone; kit/nats.conf has an account
+#   for vrelay with a user a mode (serve, write, migrate: spec/security.md
+#   4.2, as compose/nats.conf), and a system account apart. The passwords are files of
+#   ${VEYDAN_SECRETS_DIR}, made by the kit (secrets-init does nothing here).
+# - Cassandra is tuned as a node of the mesh is, but for what only several
+#   nodes have (kit/cassandra-overrides.yaml, a copy of the mesh's, put
+#   over the config by kit/cassandra-entrypoint.sh), and its memory is the
+#   kit's count: the heap, the direct buffers
+#   (-XX:MaxDirectMemorySize, given: the image counts them from the memory
+#   of the host) and the container (components/vrelay.sh).
+# - Every container: no new privileges, no capability at all, a user of the
+#   host made for it (never root; secrets-init, which does nothing, as
+#   nobody), a read-only root with a tmpfs /tmp, memory limits and rotated
+#   logs. The docker socket is mounted nowhere. compose.yaml gives each of
+#   them no-new-privileges, cap_drop ALL and its tmpfs already: this layer
+#   names no list compose.yaml has, for an older docker compose adds the
+#   items of a list to those of the file before and then refuses the
+#   duplicates ("security_opt array items must be unique": 2.26.1 of
+#   Debian 13 does).
+# - The network has a fixed bridge name, so that the second lock in the
+#   DOCKER-USER chain (vrelay-docker-lock.service) names it.
+
+x-logging-kit: &logging-kit
+  logging:
+    driver: json-file
+    options:
+      max-size: ${LOG_MAX_SIZE:-20m}
+      max-file: ${LOG_MAX_FILES:-3}
+
+services:
+  secrets-init:
+    <<: *logging-kit
+    # The kit makes the passwords itself (components/vrelay.sh).
+    entrypoint: ["/bin/true"]
+    user: "65534:65534"
+    read_only: true
+    mem_limit: 64m
+
+  cassandra:
+    # A user of the host made for it, no capability, a read-only root: the
+    # config is copied to the tmpfs /tmp first (kit/cassandra-entrypoint.sh,
+    # with the tuning of kit/cassandra-overrides.yaml, then
+    # compose/cassandra-entrypoint.sh as it is); the data and the logs are
+    # that user's folders on the host.
+    user: "${CASSANDRA_UID:?}:${CASSANDRA_GID:?}"
+    entrypoint: ["/bin/bash", "/kit/cassandra-entrypoint.sh"]
+    read_only: true
+    environment:
+      CASSANDRA_BROADCAST_RPC_ADDRESS: 127.0.0.1
+      # Empty: this node alone (the image takes its own address).
+      CASSANDRA_SEEDS: ${CASSANDRA_SEEDS:-}
+      # The flag last on the command line wins over the image's count (a
+      # quarter of the host's memory: 3 999 MB on 16 GB). The GC log is the
+      # image's (safepoints and the heap, 10 files of 10 MB), and one heap
+      # dump at most, of a fixed name: a second OOM does not fill the disk.
+      JVM_EXTRA_OPTS: -XX:MaxDirectMemorySize=${CASSANDRA_DIRECT:?} -XX:HeapDumpPath=/var/log/cassandra/cassandra.hprof
+    # Swap off for the JVM, and the host's OOM killer takes the relay
+    # before the store (as in the mesh).
+    memswap_limit: ${CASSANDRA_MEM_LIMIT:?}
+    oom_score_adj: -500
+    volumes:
+      - ${CASSANDRA_DATA_DIR:?}:/var/lib/cassandra
+      - ${CASSANDRA_LOG_DIR:?}:/var/log/cassandra
+      - ./kit/cassandra-entrypoint.sh:/kit/cassandra-entrypoint.sh:ro
+      # mesh/cassandra-overrides.yaml of the kit, put here by components/vrelay.sh
+      - ./kit/cassandra-overrides.yaml:/kit/overrides.yaml:ro
+
+  cassandra-init:
+    <<: *logging-kit
+    # The user of Cassandra: the two passwords it sets are its files (0600).
+    user: "${CASSANDRA_UID:?}:${CASSANDRA_GID:?}"
+    entrypoint: ["/bin/bash", "/kit/cassandra-init.sh"]
+    read_only: true
+    mem_limit: 512m
+    environment:
+      HOME: /tmp
+      CASSANDRA_APP_USER: ${CASSANDRA_APP_USER:-vrelay}
+      VRELAY_KEYSPACE: ${VRELAY_KEYSPACE:-vrelay}
+    volumes:
+      - ./kit/cassandra-init.sh:/kit/cassandra-init.sh:ro
+
+  nats:
+    # A user of its own on the host, owner of its data and of its
+    # passwords (0600); the root of the image is read-only.
+    user: "${NATS_UID:?}:${NATS_GID:?}"
+    read_only: true
+    entrypoint: ["/bin/sh", "/kit/nats-entrypoint.sh"]
+    environment:
+      # Not used yet: compose/nats.conf has no cluster (README, Several
+      # servers). The kit refuses a value until the links between servers
+      # exist.
+      NATS_ROUTES: ${NATS_ROUTES:-}
+    memswap_limit: ${NATS_MEM_LIMIT:?}
+    oom_score_adj: -300
+    volumes:
+      - ${NATS_DATA_DIR:?}:/data
+      - ./kit/nats.conf:/etc/nats/nats.conf:ro
+      - ./kit/nats-entrypoint.sh:/kit/nats-entrypoint.sh:ro
+
+networks:
+  default:
+    driver_opts:
+      com.docker.network.bridge.name: ${VRELAY_BRIDGE:-br-vrelay}

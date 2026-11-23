@@ -40,6 +40,7 @@ M[card_media_key]="Uploads to the media server need the same key; the app takes 
 M[card_push_note]="Push to the official Veydan apps cannot come from this server (their push key is the project's); it serves apps built with your own key."
 M[card_push_note_gateway]="Phones are woken through the push of the Veydan network: it learns only the token of a device and the time, never who writes to whom or what."
 M[warn_media_open]="media: uploads are open to anyone with a nostr key (MEDIA_UPLOAD_KEY=open); a private server should set MEDIA_UPLOAD_KEY=required in server.conf and rerun"
+M[error_media_private]="team and channel with media require MEDIA_UPLOAD_KEY=required in server.conf; set it and rerun"
 M[warn_access_many_relays]="access: members and invites live in the vguard of this relay alone, and MESH_RELAYS names other relays that neither know them nor ask for them; a team or channel server is a server of one relay"
 M[card_access_open]="Access: open, anyone who has the link uses the server."
 M[card_access_team]="Access: team, only you (ADMIN_PUBKEY) and the people you invite: veydan-server invite, veydan-server members."

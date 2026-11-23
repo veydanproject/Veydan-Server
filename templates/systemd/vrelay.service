@@ -1,0 +1,65 @@
+[Unit]
+# services/relay/deploy/vrelay.service, with what a server of the kit adds:
+# a reload (SIGHUP: the env file, the members), many more files open, its
+# access files (/opt/vrelay/access, team and channel; the API writes them),
+# and docker, where its store and its bus run.
+Description=vrelay serve (the Veydan relay: the connections of the clients)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=vrelay
+Group=vrelay
+${V_VRELAY_GROUPS}
+${V_VRELAY_UNIT_ENV}
+ExecStart=/opt/vrelay/bin/vrelay serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+UMask=0027
+LimitNOFILE=1048576
+# Its share of the box (services/relay/spec/tuning.md 7): first for the CPU
+# when a compaction or a collection of Cassandra wants every core; its
+# memory counted from the machine by the kit (vrelay_memory, lib/common.sh:
+# about 80 KB a connection measured, 96 counted, so the limit holds
+# VRELAY_NET_MAX_CONNECTIONS), and the first the kernel stops when the
+# machine has no memory left, before the store.
+CPUWeight=200
+MemoryMax=${V_VRELAY_SERVE_MAX}
+# No transparent huge pages for the allocator: a huge page given back in part
+# stays charged whole to this limit (20 000 connections: 1 589 MB charged with
+# them, 1 124 MB without, measured).
+Environment=MIMALLOC_ALLOW_THP=0
+OOMScoreAdjust=300
+
+# The relay needs the network, its settings and the access files, nothing
+# else of the machine. Behind nginx it binds no low port: no capability.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=-/opt/vrelay/access
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

@@ -40,6 +40,7 @@ M[card_media_key]="Загрузка на медиа-сервер требует 
 M[card_push_note]="Push в официальные приложения Veydan с этого сервера не дойдёт (их ключ push — у проекта); он обслуживает приложения, собранные с вашим ключом."
 M[card_push_note_gateway]="Телефоны будит push сети Veydan: он узнаёт только токен устройства и время, но не кто кому пишет и что."
 M[warn_media_open]="media: загрузка открыта любому с ключом nostr (MEDIA_UPLOAD_KEY=open); частному серверу нужно поставить MEDIA_UPLOAD_KEY=required в server.conf и перезапустить установщик"
+M[error_media_private]="team и channel с медиа требуют MEDIA_UPLOAD_KEY=required в server.conf; поставьте его и перезапустите установщик"
 M[warn_access_many_relays]="access: участники и приглашения живут только в vguard этого реле, а MESH_RELAYS называет другие реле, которые их не знают и не спрашивают; сервер team или channel — сервер одного реле"
 M[card_access_open]="Доступ: open, сервером пользуется любой, у кого есть ссылка."
 M[card_access_team]="Доступ: team, только вы (ADMIN_PUBKEY) и те, кого вы пригласите: veydan-server invite, veydan-server members."

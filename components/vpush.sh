@@ -76,6 +76,47 @@ for app in $FCM_APPS; do
     served+=" $app"
 done
 
+# The iOS apps and their key of APNs: apns-<app id>.p8 beside the installer
+# or in secrets/ of the kit, with APNS_KEY_ID and APNS_TEAM_ID of the Apple
+# developer account (one key serves every app of the team, in production
+# and in the sandbox); with APNS_APPS naming one app, any .p8 beside the
+# installer is its key. The topic is the app id, which is the bundle id. A
+# key already on the server stays when the kit brings none.
+apns_key() { # apns_key <app id> → the path of its key in the kit, or nothing
+    local d
+    for d in $fcm_dirs; do [ -f "$d/apns-$1.p8" ] && { printf '%s' "$d/apns-$1.p8"; return 0; }; done
+    return 1
+}
+if [ -z "$APNS_APPS" ]; then
+    for d in $fcm_dirs; do
+        for f in "$d"/apns-*.p8; do
+            [ -f "$f" ] || continue
+            app=$(basename "$f" .p8); app=${app#apns-}
+            [[ " $APNS_APPS " == *" $app "* ]] || APNS_APPS="${APNS_APPS:+$APNS_APPS }$app"
+        done
+    done
+fi
+if [ -n "$APNS_APPS" ] && { [ -z "$APNS_KEY_ID" ] || [ -z "$APNS_TEAM_ID" ]; }; then
+    warn "vpush: no iOS app is served: APNS_APPS ($APNS_APPS) needs APNS_KEY_ID and APNS_TEAM_ID in server.conf, from the developer account of Apple"
+    APNS_APPS=""
+fi
+for app in $APNS_APPS; do
+    key=$(apns_key "$app") || key=""
+    if [ -z "$key" ] && [ "$(printf '%s\n' $APNS_APPS | wc -l)" = 1 ]; then
+        for f in "$FROM"/*.p8; do
+            [ -f "$f" ] && grep -q 'BEGIN PRIVATE KEY' "$f" && { key=$f; break; }
+        done
+    fi
+    if [ -n "$key" ]; then
+        put "$P/etc/secrets/apns-$app.p8" 0600 vpush:vpush < "$key"
+    elif [ ! -f "$(target "$P/etc/secrets/apns-$app.p8")" ]; then
+        warn "vpush: no key of APNs for $app: put apns-$app.p8 beside the installer and run again"
+        continue
+    fi
+    apps+=$'\n'"[apps.\"$app\".apns]"$'\n'"key_file = \"$P/etc/secrets/apns-$app.p8\""$'\n'"key_id = \"$APNS_KEY_ID\""$'\n'"team_id = \"$APNS_TEAM_ID\""$'\n'"topic = \"$app\""$'\n'
+    [[ "$served " == *" $app "* ]] || served+=" $app"
+done
+
 # PUSH_GATEWAY=veydan: the phones of the apps of Veydan are woken through the
 # push of the Veydan network, the gateway (services/push/spec/protocol.md,
 # "The gateway"). No key of FCM is asked for: the device registers here with
@@ -102,8 +143,8 @@ if [ "${PUSH_GATEWAY:-off}" = veydan ]; then
     gateway=$'\n'"[gateway]"$'\n'"url = \"$VEYDAN_PUSH_GATEWAY\""$'\n'"key_file = \"$P/data/gateway.key\""$'\n'
 fi
 if [ -z "$apps" ]; then
-    apps=$'\n'"# No app yet: FCM_APPS in server.conf and fcm-<app id>.json beside the installer, or PUSH_GATEWAY=veydan."$'\n'
-    warn "vpush serves no app: set FCM_APPS in server.conf and put the Firebase key beside the installer, or wake phones through the push of the Veydan network (veydan-server push veydan)"
+    apps=$'\n'"# No app yet: FCM_APPS in server.conf and fcm-<app id>.json beside the installer, APNS_APPS and apns-<app id>.p8, or PUSH_GATEWAY=veydan."$'\n'
+    warn "vpush serves no app: set FCM_APPS in server.conf and put the Firebase key beside the installer (APNS_APPS and the .p8 of APNs for iOS), or wake phones through the push of the Veydan network (veydan-server push veydan)"
 fi
 
 V_VPUSH_FQDN=$VPUSH_FQDN

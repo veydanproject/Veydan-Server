@@ -1,0 +1,81 @@
+# Top-level settings of cassandra.yaml for a node of the cluster
+# (spec/cluster.md 1, spec/security.md 5, spec/tuning.md 2). One `key: value`
+# a line, top-level keys only (a value may be a one-line YAML mapping or
+# list): cassandra/entrypoint.sh puts each over the image's line of that key
+# (commented or not), or adds it. The image's own entrypoint then sets the
+# addresses, seeds, snitch, cluster name and tokens from the environment.
+# The values are those of the all-in-one server (8 vCPU, 16 GB); a dedicated
+# node of the database has its own column in spec/tuning.md.
+# One text: this file of the relay (deploy/cluster/cassandra/overrides.yaml)
+# is the source; the server kit (Veydan-Server) carries it word for word as
+# its mesh/cassandra-overrides.yaml, and a test of the kit keeps them equal.
+
+# Logins and permissions (the image's defaults are AllowAll...).
+authenticator: PasswordAuthenticator
+authorizer: CassandraAuthorizer
+role_manager: CassandraRoleManager
+
+# Hints: a cut of up to a day heals without a repair (spec/cluster.md 1.3).
+max_hint_window: 24h
+max_hints_size_per_host: 16384MiB
+max_hints_delivery_threads: 4
+hinted_handoff_throttle: 4096KiB
+hints_compression: [{class_name: LZ4Compressor, parameters: [{}]}]
+auto_hints_cleanup_enabled: true
+
+# Between datacenters: compressed (the default, kept explicit).
+internode_compression: dc
+inter_dc_stream_throughput_outbound: 24MiB/s
+entire_sstable_inter_dc_stream_throughput_outbound: 24MiB/s
+
+# Off, as in the image; kept explicit so that the audit can read them here.
+user_defined_functions_enabled: false
+materialized_views_enabled: false
+
+# The formats of Cassandra 5.0, for a new cluster only (spec/tuning.md 2.1):
+# the trie-indexed SSTables need the 5.0 storage mode; there is no way back
+# to 4.x files once a node has written them.
+storage_compatibility_mode: NONE
+sstable: {selected_format: bti}
+uuid_sstable_identifiers_enabled: true
+memtable_allocation_type: offheap_objects
+# BTI keeps no key cache.
+key_cache_size: 0MiB
+file_cache_size: 256MiB
+
+# The commit log (spec/tuning.md 2.3): a sync a second, writes not held
+# until no sync has ended for 10 s (the stall of a virtual disk).
+commitlog_sync: periodic
+commitlog_sync_period: 1000ms
+periodic_commitlog_sync_lag_block: 10000ms
+commitlog_total_space: 2048MiB
+trickle_fsync: true
+
+# Compaction beside the relay on one box (spec/tuning.md 2.4).
+concurrent_compactors: 2
+compaction_throughput: 64MiB/s
+
+# Under the relay's own request timeout (VRELAY_STORE_REQUEST_TIMEOUT_MS,
+# 2 s): the node answers a timeout before the driver gives up on it.
+read_request_timeout: 1500ms
+write_request_timeout: 1500ms
+internode_timeout: true
+
+# Snapshots of a dropped or truncated table go after 30 days.
+auto_snapshot_ttl: 30d
+
+# Guardrails against our own bugs (spec/tuning.md 2.9): they bind vrelay's
+# role, not the superuser of migrate.
+read_thresholds_enabled: true
+coordinator_read_size_warn_threshold: 16MiB
+local_read_size_warn_threshold: 8MiB
+partition_size_warn_threshold: 100MiB
+partition_tombstones_warn_threshold: 10000
+column_value_size_warn_threshold: 256KiB
+column_value_size_fail_threshold: 1MiB
+items_per_collection_warn_threshold: 200
+partition_keys_in_select_warn_threshold: 200
+partition_keys_in_select_fail_threshold: 1000
+page_size_warn_threshold: 5000
+data_disk_usage_percentage_warn_threshold: 60
+data_disk_usage_percentage_fail_threshold: 90

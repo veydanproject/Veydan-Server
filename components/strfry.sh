@@ -68,7 +68,9 @@ elif [ "$built" != "$STRFRY_COMMIT" ] || [ ! -x "$S/bin/strfry" ]; then
     swap_mb=$(awk '/^SwapFree:/ {print int($2/1024)}' /proc/meminfo)
     build_swap=""
     if [ $((mem_mb + swap_mb)) -lt 2560 ]; then
-        build_swap=/var/tmp/strfry-build.swap
+        # In the folder of root, not in /var/tmp: a name every user knows, in
+        # a folder every user writes, is a link waiting for root.
+        build_swap=$S/build.swap
         say "strfry: ${mem_mb} MB free memory, adding 2 GB of swap for the build"
         swapoff "$build_swap" 2>/dev/null || true
         rm -f "$build_swap"

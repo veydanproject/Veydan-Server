@@ -1,0 +1,17 @@
+[Unit]
+# The weekly repair of this node of Cassandra (services/relay/spec/cluster.md
+# 1.3, deploy/cluster/systemd/vrelay-repair.service): the primary ranges,
+# full, of the keyspace vrelay and of system_auth. Every node of the mesh runs
+# it on a day of its own (vrelay-repair.timer), so that every range is
+# repaired within 7 days, under gc_grace_seconds (10 days).
+Description=vrelay: Cassandra repair of vrelay and system_auth (full, primary ranges)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker compose --project-directory /opt/vrelay/compose --env-file /opt/vrelay/compose/.env -f /opt/vrelay/compose/mesh.yaml exec -T cassandra nodetool repair --full -pr vrelay
+ExecStart=/usr/bin/docker compose --project-directory /opt/vrelay/compose --env-file /opt/vrelay/compose/.env -f /opt/vrelay/compose/mesh.yaml exec -T cassandra nodetool repair --full -pr system_auth
+# A repair that does not end in 6 h is a problem to look at, not to wait for.
+TimeoutStartSec=6h
+Nice=10

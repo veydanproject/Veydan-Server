@@ -1,0 +1,382 @@
+# Veydan relay on one machine: vrelay serve and vrelay write, NATS
+# (JetStream), Cassandra, and Caddy for TLS. For a machine of 8 GB (the
+# limits below add up to under 5 GB).
+#
+#   cp compose/.env.example .env      # set RELAY_HOST; read the rest
+#   docker compose up -d              # everything, from published images
+#   docker compose logs relay-init    # the card: the relay's key and link
+#
+# README, "Run with Docker". Every tunable is a variable of .env
+# (compose/.env.example); the defaults below repeat it, so that a missing
+# line still works. The passwords and keys are made at the first start
+# (secrets-init) into the volume `secrets`, and never again.
+#
+# Every container: no capability unless named, no new privileges, a user of
+# its own (only the two one-shots that make the passwords and give the
+# folders to their users are root, with the three capabilities they need
+# and no network), a read-only root, a memory limit, rotated logs. Only
+# Caddy listens on the internet (80 and 443); Cassandra, NATS and the plain
+# socket of the relay are published on loopback alone.
+#
+# The server kit (Veydan-Server) runs Cassandra and NATS of this file, word
+# for word, with a layer of its own (compose.kit.yaml there); it never turns
+# on the profiles `relay` and `tls`: vrelay runs on its host, nginx does TLS.
+
+name: ${COMPOSE_PROJECT_NAME:-veydan-relay}
+
+x-hardened: &hardened
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  read_only: true
+
+x-restart: &restart
+  restart: ${RESTART_POLICY:-unless-stopped}
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: ${LOG_MAX_SIZE:-20m}
+      max-file: ${LOG_MAX_FILES:-3}
+
+# The users of the containers (numbers: the images have no such names):
+#   999    Cassandra, its one-shots, and vrelay migrate (the image's user cassandra)
+#   10001  NATS
+#   10002  Caddy
+#   65532  vrelay serve and vrelay write (the image's own user)
+# secrets-init gives each password to the users that read it, 0400 or 0440.
+
+# The store and the bus, the same for serve, write and migrate. The settings
+# are those of spec/config.md (VRELAY_<SECTION>_<NAME>); a secret is a file
+# named by its _FILE variable. Each mode checks what it reads:
+#   docker compose run --rm --no-deps vrelay config check --mode serve
+x-relay-env: &relay-env
+  VRELAY_STORE_NODES: cassandra:9042
+  VRELAY_STORE_USERNAME: ${CASSANDRA_APP_USER:-vrelay}
+  VRELAY_STORE_PASSWORD_FILE: /secrets/cassandra-vrelay-password
+  VRELAY_STORE_KEYSPACE: ${VRELAY_KEYSPACE:-vrelay}
+  VRELAY_STORE_REPLICATION_FACTOR: ${VRELAY_REPLICATION_FACTOR:-1}
+  VRELAY_STORE_LOCAL_DC: ${CASSANDRA_DC:-dc1}
+  VRELAY_BUS_SERVERS: nats://nats:4222
+  VRELAY_BUS_STREAM_REPLICAS: ${NATS_JS_REPLICAS:-1}
+  # The tables and the streams are made by vrelay-migrate alone, as the
+  # superuser of Cassandra: vrelay's own role may not make a keyspace.
+  VRELAY_ADMIN_SERVE_MIGRATES: "false"
+  VRELAY_ADMIN_WRITE_MIGRATES: "false"
+  VRELAY_RETENTION_DAYS: ${RELAY_RETENTION_DAYS:-90}
+  VRELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}
+
+x-relay: &relay
+  image: ${RELAY_IMAGE:-rookbeam/vrelay}:${RELAY_TAG:-0.1.0}
+  <<: [*hardened, *logging]
+  profiles: ["relay"]
+  # The control sockets (VRELAY_ADMIN_CONTROL_DIR).
+  tmpfs: ["/run/vrelay:size=1m,mode=0700,uid=65532,gid=65532"]
+  pids_limit: 256
+
+services:
+  # ---- one-shot: the passwords and keys, the folder of NATS -------------------
+  secrets-init:
+    image: nats:${NATS_TAG:-2.15.3-alpine@sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a}
+    <<: [*hardened, *logging]
+    entrypoint: ["/bin/sh", "/init.sh"]
+    restart: "no"
+    # Root, to give each file to its user: chown, chmod and the reading of
+    # files of other users, nothing else; no network at all.
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+    network_mode: none
+    mem_limit: 64m
+    environment:
+      # The keys of a network to join (empty: made here, random).
+      MESH_APP_KEY: ${MESH_APP_KEY:-}
+      MESH_PEER_KEY: ${MESH_PEER_KEY:-}
+    volumes:
+      - ./compose/secrets-init.sh:/init.sh:ro
+      - ${VEYDAN_SECRETS_DIR:-secrets}:/secrets
+      - ${NATS_DATA_DIR:-nats-data}:/own/nats
+
+  # ---- storage: Cassandra -----------------------------------------------------
+  cassandra:
+    image: cassandra:${CASSANDRA_TAG:-5.0.9-trixie@sha256:7ec032283c56c9ea7c022007b2fecdf5ca69c7a9871e0634f41ae05833dc1638}
+    <<: [*hardened, *restart, *logging]
+    user: "999:999"
+    entrypoint: ["/bin/bash", "/vd/cassandra-entrypoint.sh"]
+    command: ["cassandra", "-f"]
+    # An init as PID 1 reaps the JVM's children: without it `docker rm -f`
+    # left a zombie the daemon could not remove (seen in a load test).
+    init: true
+    # The config is copied here (compose/cassandra-entrypoint.sh); exec: JNA
+    # links its native library from there.
+    tmpfs: ["/tmp:size=64m,mode=1777,exec"]
+    environment:
+      MAX_HEAP_SIZE: ${CASSANDRA_HEAP:-1G}                 # JVM heap (G1; no HEAP_NEWSIZE)
+      # The direct buffers: the image counts a quarter of the host's memory,
+      # not of the container's (2 GB on 8 GB, in a limit of 2.5 GB).
+      MAX_DIRECT_MEMORY_SIZE: ${CASSANDRA_DIRECT:-512M}
+      CASSANDRA_CLUSTER_NAME: ${CASSANDRA_CLUSTER_NAME:-veydan}
+      CASSANDRA_DC: ${CASSANDRA_DC:-dc1}
+      CASSANDRA_RACK: ${CASSANDRA_RACK:-rack1}
+      CASSANDRA_ENDPOINT_SNITCH: ${CASSANDRA_SNITCH:-GossipingPropertyFileSnitch}
+      CASSANDRA_NUM_TOKENS: ${CASSANDRA_NUM_TOKENS:-16}
+      # -XX:+AlwaysPreTouch: the heap is touched at the start, not at the
+      # first collection (a fresh node's first one took 3 s in a load test and
+      # timed out every request).
+      JVM_EXTRA_OPTS: ${CASSANDRA_JVM_EXTRA_OPTS:--XX:+AlwaysPreTouch -Xlog:gc:file=/var/log/cassandra/gc.log:time,uptime:filecount=2,filesize=10m}
+    mem_limit: ${CASSANDRA_MEM_LIMIT:-2560m}
+    pids_limit: 4096
+    ulimits:
+      nofile: {soft: 100000, hard: 100000}
+      memlock: -1
+    ports:
+      # CQL is for the relay (same compose network) and for tools: localhost by default
+      - ${CASSANDRA_BIND:-127.0.0.1}:${CASSANDRA_CQL_PORT:-9042}:9042
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+      - cassandra-logs:/var/log/cassandra
+      - ./compose/cassandra-entrypoint.sh:/vd/cassandra-entrypoint.sh:ro
+    healthcheck:
+      # Healthy when the native port answers a CQL OPTIONS with SUPPORTED
+      # (a frame of protocol 4: 0x84, its stream, opcode 0x06): what
+      # `nodetool statusbinary` told, without a JVM started at every check
+      # (which took a core in ten of a machine of eight).
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9042 && printf '\\004\\0\\0\\0\\005\\0\\0\\0\\0' >&3 && r=$$(timeout 5 head -c 5 <&3 | od -An -tx1 | tr -d ' \\n') && [[ $$r == 84??????06 ]]"]
+      interval: ${HEALTH_INTERVAL:-10s}
+      timeout: 20s
+      retries: ${CASSANDRA_HEALTH_RETRIES:-30}
+      start_period: ${CASSANDRA_START_PERIOD:-60s}
+    stop_grace_period: 2m                                   # lets Cassandra drain and flush
+
+  # ---- one-shot: our superuser in place of cassandra/cassandra, vrelay's role --
+  cassandra-init: &cassandra-init
+    image: cassandra:${CASSANDRA_TAG:-5.0.9-trixie@sha256:7ec032283c56c9ea7c022007b2fecdf5ca69c7a9871e0634f41ae05833dc1638}
+    <<: [*hardened, *logging]
+    user: "999:999"
+    entrypoint: ["/bin/bash", "/init.sh"]
+    restart: "no"
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    mem_limit: 512m
+    environment:
+      HOME: /tmp
+      CASSANDRA_HOST: cassandra
+      CASSANDRA_USER: ${CASSANDRA_USER:-veydan}
+      CASSANDRA_APP_USER: ${CASSANDRA_APP_USER:-vrelay}
+      VRELAY_KEYSPACE: ${VRELAY_KEYSPACE:-vrelay}
+      CASSANDRA_INIT_WAIT: ${CASSANDRA_INIT_WAIT:-180}
+    volumes:
+      - ./compose/cassandra-init.sh:/init.sh:ro
+      - ${VEYDAN_SECRETS_DIR:-secrets}:/secrets:ro
+    depends_on:
+      cassandra: {condition: service_healthy}
+      secrets-init: {condition: service_completed_successfully}
+
+  # ---- queue and live bus: NATS with JetStream --------------------------------
+  nats:
+    image: nats:${NATS_TAG:-2.15.3-alpine@sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a}
+    <<: [*hardened, *restart, *logging]
+    user: "10001:10001"
+    entrypoint: ["/bin/sh", "/etc/nats/nats-entrypoint.sh"]
+    environment:
+      NATS_SERVER_NAME: ${NATS_SERVER_NAME:-veydan-nats-1}
+      NATS_JS_MAX_MEMORY: ${NATS_JS_MAX_MEMORY:-256M}      # JetStream streams kept in memory
+      NATS_JS_MAX_FILE: ${NATS_JS_MAX_FILE:-20G}           # JetStream streams on disk
+      GOMEMLIMIT: ${NATS_GOMEMLIMIT:-768MiB}               # Go soft limit, below mem_limit
+    mem_limit: ${NATS_MEM_LIMIT:-1024m}
+    pids_limit: 512
+    ports:
+      - ${NATS_BIND:-127.0.0.1}:${NATS_CLIENT_PORT:-4222}:4222
+      - ${NATS_MONITOR_BIND:-127.0.0.1}:${NATS_MONITOR_PORT:-8222}:8222
+    volumes:
+      - ${NATS_DATA_DIR:-nats-data}:/data
+      - ./compose/nats.conf:/etc/nats/nats.conf:ro
+      - ./compose/nats-entrypoint.sh:/etc/nats/nats-entrypoint.sh:ro
+      - ${VEYDAN_SECRETS_DIR:-secrets}:/secrets:ro
+    depends_on:
+      secrets-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8222/healthz"]
+      interval: ${HEALTH_INTERVAL:-10s}
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+
+  # ---- the relay: profile `relay` ---------------------------------------------
+  # One-shot: the names of the relay checked and written as the site of
+  # Caddy, the files of access and the folders of Caddy given to their
+  # users, and the card printed once.
+  relay-init:
+    image: nats:${NATS_TAG:-2.15.3-alpine@sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a}
+    <<: [*hardened, *logging]
+    profiles: ["relay"]
+    entrypoint: ["/bin/sh", "/init.sh"]
+    restart: "no"
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+    network_mode: none
+    mem_limit: 64m
+    environment:
+      RELAY_HOST: ${RELAY_HOST:-}
+      RELAY_ALIASES: ${RELAY_ALIASES:-}
+      ACCESS_MODE: ${ACCESS_MODE:-open}
+    volumes:
+      - ./compose/relay-init.sh:/init.sh:ro
+      - ${VEYDAN_SECRETS_DIR:-secrets}:/secrets
+      - vrelay-access:/access
+      - caddy-data:/own/caddy-data
+      - caddy-config:/own/caddy-config
+    depends_on:
+      secrets-init: {condition: service_completed_successfully}
+
+  # One-shot: the tables of Cassandra and the streams of NATS, as the
+  # superuser of Cassandra and the user migrate of NATS (idempotent: run at
+  # every start, so a new version makes what it adds).
+  vrelay-migrate:
+    <<: *relay
+    user: "999:999"
+    command: ["migrate"]
+    restart: "no"
+    mem_limit: 256m
+    environment:
+      <<: *relay-env
+      VRELAY_STORE_USERNAME: ${CASSANDRA_USER:-veydan}
+      VRELAY_STORE_PASSWORD_FILE: /secrets/cassandra-admin-password
+      VRELAY_BUS_USERNAME: migrate
+      VRELAY_BUS_PASSWORD_FILE: /secrets/nats-migrate-password
+    tmpfs: ["/run/vrelay:size=1m,mode=0700,uid=999,gid=999"]
+    volumes:
+      - ${VEYDAN_SECRETS_DIR:-secrets}:/secrets:ro
+    depends_on:
+      cassandra-init: {condition: service_completed_successfully}
+      nats: {condition: service_healthy}
+
+  # One-shot: vrelay's rights on its keyspace, now that migrate made it.
+  cassandra-grant:
+    <<: *cassandra-init
+    profiles: ["relay"]
+    depends_on:
+      vrelay-migrate: {condition: service_completed_successfully}
+
+  # vrelay write: the queue into Cassandra.
+  vrelay-write:
+    <<: [*relay, *restart]
+    command: ["write"]
+    environment:
+      <<: *relay-env
+      VRELAY_BUS_USERNAME: write
+      VRELAY_BUS_PASSWORD_FILE: /secrets/nats-write-password
+      # The token of the statistics endpoint (when VRELAY_STATS_LISTEN is set).
+      VRELAY_STATS_TOKEN_FILE: /secrets/stats-token
+    mem_limit: ${RELAY_WRITE_MEM_LIMIT:-512m}
+    volumes:
+      - ${VEYDAN_SECRETS_DIR:-secrets}:/secrets:ro
+    depends_on:
+      cassandra-grant: {condition: service_completed_successfully}
+      nats: {condition: service_healthy}
+
+  # vrelay serve: the WebSockets, the sign-in, the reads; NIP-11 on the same
+  # socket. Plain WebSockets on 7778: Caddy in front does TLS; the port is
+  # published on loopback for a proxy of one's own and for tools.
+  vrelay:
+    <<: [*relay, *restart]
+    command: ["serve"]
+    environment:
+      <<: *relay-env
+      VRELAY_BUS_USERNAME: serve
+      VRELAY_BUS_PASSWORD_FILE: /secrets/nats-serve-password
+      VRELAY_STATS_TOKEN_FILE: /secrets/stats-token
+      VRELAY_NET_LISTEN: 0.0.0.0:7778
+      VRELAY_AUTH_RELAY_HOSTS: ${RELAY_HOST:-}${RELAY_ALIASES:+,${RELAY_ALIASES}}
+      VRELAY_GATE_APP_KEY_FILE: /secrets/app-key
+      VRELAY_GATE_PEER_KEY_FILE: /secrets/peer-key
+      # Only Caddy is believed about the address of a client (X-Real-IP): its
+      # fixed address on the network edge, not the network, whose gateway is
+      # the host (any local process could send the header from there).
+      VRELAY_GATE_TRUSTED_PROXIES: ${RELAY_TRUSTED_PROXIES:-${EDGE_CADDY_IP:-172.31.250.2}/32}
+      VRELAY_ACCESS_MODE: ${ACCESS_MODE:-open}
+      VRELAY_ACCESS_ADMINS: ${ADMIN_PUBKEY:-}
+      VRELAY_ACCESS_MEMBERS_FILE: /access/members.txt
+      VRELAY_ACCESS_INVITES_FILE: /access/invites.json
+      VRELAY_ACCESS_SECRET_FILE: /secrets/access-key
+      VRELAY_ACCESS_PUBLIC_URL: https://${RELAY_HOST:-}
+      VRELAY_INFO_NAME: ${RELAY_NAME:-}
+      VRELAY_INFO_DESCRIPTION: ${RELAY_DESCRIPTION:-}
+      VRELAY_INFO_PUBKEY: ${ADMIN_PUBKEY:-}
+      VRELAY_INFO_CONTACT: ${RELAY_CONTACT:-}
+    mem_limit: ${RELAY_MEM_LIMIT:-512m}
+    ports:
+      - ${RELAY_PLAIN_BIND:-127.0.0.1}:${RELAY_PLAIN_PORT:-7778}:7778
+    networks:
+      default: {}
+      edge: {}
+    volumes:
+      - ${VEYDAN_SECRETS_DIR:-secrets}:/secrets:ro
+      - vrelay-access:/access
+    healthcheck:
+      # A REQ to its own socket until the EOSE, with the peer key.
+      test: ["CMD", "/vrelay", "probe"]
+      interval: ${HEALTH_INTERVAL:-10s}
+      timeout: 15s
+      retries: 6
+      start_period: 10s
+    depends_on:
+      relay-init: {condition: service_completed_successfully}
+      cassandra-grant: {condition: service_completed_successfully}
+      nats: {condition: service_healthy}
+
+  # ---- TLS: Caddy, profile `tls` ----------------------------------------------
+  # A certificate for RELAY_HOST (and RELAY_ALIASES) from Let's Encrypt,
+  # obtained and renewed by Caddy itself: the name must point at this
+  # machine and ports 80 and 443 be open to the internet.
+  caddy:
+    image: caddy:${CADDY_TAG:-2.11.8-alpine@sha256:f6228111e5fafa1a5238258d0858e103f10599b8d1659a146e7726681a002bb9}
+    <<: [*hardened, *restart, *logging]
+    profiles: ["tls"]
+    user: "10002:10002"
+    # 80 and 443 without a capability: the container's own network may bind them.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    mem_limit: ${CADDY_MEM_LIMIT:-256m}
+    pids_limit: 256
+    ports:
+      - ${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80
+      - ${HTTPS_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443
+    networks:
+      edge:
+        # Fixed, outside the range docker gives out (networks: edge below):
+        # the one address vrelay believes X-Real-IP from.
+        ipv4_address: ${EDGE_CADDY_IP:-172.31.250.2}
+    volumes:
+      - ./compose/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data                  # the certificates and the ACME account
+      - caddy-config:/config
+    healthcheck:
+      # Its port open (a request of the API would be logged each time).
+      test: ["CMD", "nc", "-z", "127.0.0.1", "443"]
+      interval: ${HEALTH_INTERVAL:-10s}
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    depends_on:
+      relay-init: {condition: service_completed_successfully}
+      vrelay: {condition: service_started}
+
+networks:
+  # Caddy and vrelay serve alone. vrelay believes X-Real-IP from Caddy's
+  # fixed address alone (RELAY_TRUSTED_PROXIES): .1 is the gateway, the host
+  # itself; docker gives the others (vrelay) addresses of ip_range only, so
+  # that none takes Caddy's.
+  edge:
+    ipam:
+      config:
+        - subnet: ${EDGE_SUBNET:-172.31.250.0/29}
+          # Named: with an ip_range docker takes its first address otherwise.
+          gateway: ${EDGE_GATEWAY:-172.31.250.1}
+          ip_range: ${EDGE_IP_RANGE:-172.31.250.4/30}
+
+volumes:
+  secrets:
+  cassandra-data:
+  cassandra-logs:
+  nats-data:
+  vrelay-access:
+  caddy-data:
+  caddy-config:

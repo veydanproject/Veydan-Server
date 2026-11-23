@@ -1,0 +1,13 @@
+[Unit]
+# A day of the week of its own for each server of the mesh, so that two
+# repairs never run at once (lib/mesh.sh: by the place of SERVER among the
+# names of the mesh, three days apart: eu-1 Mon, us-1 Thu for two servers).
+Description=vrelay: the weekly Cassandra repair of this node
+
+[Timer]
+OnCalendar=${V_REPAIR_ON}
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

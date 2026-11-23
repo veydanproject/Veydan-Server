@@ -13,7 +13,8 @@ under its own licence, which is in its repository:
 | blossom-server | https://github.com/hzrd149/blossom-server |
 | Deno | https://github.com/denoland/deno |
 | libsql-server (sqld) | https://github.com/tursodatabase/libsql |
-| nginx, certbot, ufw and the other packages of Debian | https://www.debian.org |
+| nginx and njs, the packages of nginx.org | https://nginx.org |
+| certbot, ufw and the other packages of Debian | https://www.debian.org |
 
 VPush and VCall, the programs of the Veydan Project the kit installs, carry
 their own notices in their releases.

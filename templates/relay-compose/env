@@ -1,0 +1,50 @@
+# The settings of the store and the bus of the relay (compose.yaml and
+# compose.kit.yaml in this folder). Made by run.sh (components/vrelay.sh)
+# from server.conf and versions.conf; edits are lost on the next run. The
+# names are those of services/relay/deploy/compose/.env.example.
+COMPOSE_PROJECT_NAME=vrelay
+VEYDAN_SECRETS_DIR=${V_COMPOSE_SECRETS}
+VRELAY_BRIDGE=br-vrelay
+
+# Images: a version and its digest (versions.conf).
+CASSANDRA_TAG=${V_CASSANDRA_TAG}
+NATS_TAG=${V_NATS_TAG}
+
+# Cassandra: one node, this server's datacenter (RELAY_DC of server.conf,
+# fixed at the first start of the node), its heap from the memory of the
+# machine (RELAY_CASSANDRA_HEAP_MB), published on loopback only.
+CASSANDRA_UID=${V_CASSANDRA_UID}
+CASSANDRA_GID=${V_CASSANDRA_GID}
+CASSANDRA_DATA_DIR=${V_CASSANDRA_DATA}
+CASSANDRA_LOG_DIR=${V_CASSANDRA_LOGS}
+CASSANDRA_CLUSTER_NAME=${V_CASSANDRA_CLUSTER}
+CASSANDRA_DC=${V_RELAY_DC}
+CASSANDRA_SEEDS=${V_CASSANDRA_SEEDS}
+CASSANDRA_HEAP=${V_CASSANDRA_HEAP}
+# The direct buffers of the JVM (-XX:MaxDirectMemorySize), and the container:
+# the kit's count of the machine (components/vrelay.sh).
+CASSANDRA_DIRECT=${V_CASSANDRA_DIRECT}
+CASSANDRA_MEM_LIMIT=${V_CASSANDRA_MEM_LIMIT}
+CASSANDRA_BIND=127.0.0.1
+CASSANDRA_CQL_PORT=9042
+CASSANDRA_USER=veydan
+CASSANDRA_APP_USER=vrelay
+VRELAY_KEYSPACE=vrelay
+VRELAY_REPLICATION_FACTOR=1
+
+# NATS with JetStream, published on loopback only (the clients' port and the
+# monitoring page).
+NATS_UID=${V_NATS_UID}
+NATS_GID=${V_NATS_GID}
+NATS_DATA_DIR=${V_NATS_DATA}
+NATS_SERVER_NAME=${V_NATS_SERVER_NAME}
+NATS_ROUTES=${V_NATS_ROUTES}
+NATS_BIND=127.0.0.1
+NATS_CLIENT_PORT=4222
+NATS_MONITOR_BIND=127.0.0.1
+NATS_MONITOR_PORT=8222
+NATS_JS_REPLICAS=1
+# Its memory, from the machine (components/vrelay.sh): Go's soft limit four
+# fifths of the container.
+NATS_MEM_LIMIT=${V_NATS_MEM_LIMIT}
+NATS_GOMEMLIMIT=${V_NATS_GOMEMLIMIT}

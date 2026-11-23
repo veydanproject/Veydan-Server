@@ -1,0 +1,10 @@
+[Unit]
+# Once a minute: the health of Cassandra for the agent (veydan-store-health.service).
+Description=Veydan: the health of the store of the relay, once a minute
+
+[Timer]
+OnCalendar=minutely
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

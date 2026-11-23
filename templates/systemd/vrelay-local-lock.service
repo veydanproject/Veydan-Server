@@ -1,0 +1,18 @@
+[Unit]
+# The local lock of the relay (/opt/vrelay/bin/vrelay-local-lock.sh): which
+# users of this machine may open the ports of Cassandra, NATS and the
+# statistics of vrelay; put at boot before docker, and by the kit at every
+# run.
+Description=vrelay: the local ports of the store, the bus and the statistics for their users alone (nftables)
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target docker.service vrelay.service vrelay-write.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/vrelay/bin/vrelay-local-lock.sh
+
+[Install]
+WantedBy=multi-user.target

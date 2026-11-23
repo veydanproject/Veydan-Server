@@ -1,0 +1,30 @@
+# Caddy in front of the relay (service caddy of compose.yaml, profile tls).
+# TLS for RELAY_HOST and RELAY_ALIASES of .env with a certificate Caddy
+# obtains and renews by itself (ACME: Let's Encrypt, ZeroSSL as the second),
+# kept in the volume caddy-data; port 80 answers the challenge and sends
+# everything else to https. Behind it vrelay serve speaks plain WebSockets
+# and NIP-11 on one socket; Caddy tells it the client's address in X-Real-IP,
+# and vrelay believes that header from Caddy's address alone.
+{
+	# The API of Caddy, inside its container only.
+	admin localhost:2019
+	# A name without a public certificate (localhost) gets one of Caddy's
+	# own CA; it is never put into a trust store.
+	skip_install_trust
+	servers {
+		# No HTTP/3: the compose publishes TCP alone.
+		protocols h1 h2
+	}
+}
+
+(relay) {
+	reverse_proxy vrelay:7778 {
+		header_up X-Real-IP {remote_host}
+	}
+}
+
+# The site: RELAY_HOST and RELAY_ALIASES, written by relay-init as
+#   <host>, <alias>, ... {
+#   	import relay
+#   }
+import /config/sites.caddy

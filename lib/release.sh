@@ -10,7 +10,7 @@
 #   vcloud release-sign --component <c> --version <v> --file <f>
 # Ed25519 over "vcloud-release/1\n<component>\n<version>\n<sha256 of the file>",
 # 128 hex in <file>.sig beside the file in the release. A component is
-# server (this kit), link, call, vpush or vguard (the programs); the kit of
+# server (this kit), link, call, vpush, vguard or vrelay (the programs); the kit of
 # kit.run is signed as kit, so that the one never passes for the other.
 
 # --- release.sh ---
@@ -40,13 +40,15 @@ release_verify() {
 # --- end of release.sh ---
 
 # The component a program of ours is signed as: vlink → link, vcall →
-# call, vpush → vpush, vguard → vguard (vcloud-proto release::COMPONENTS).
+# call, vpush → vpush, vguard → vguard, vrelay → vrelay (the components
+# the control centre knows).
 release_component() {
     case "$1" in
         vlink) echo link ;;
         vcall) echo call ;;
         vpush) echo vpush ;;
         vguard) echo vguard ;;   # its own release since 0.6.0 (Veydan-Guard); in Veydan-Push's before, signed apart from vpush
+        vrelay) echo vrelay ;;   # Veydan-Relay (services/relay/spec/wiring.md 16)
         *) echo "$1" ;;
     esac
 }

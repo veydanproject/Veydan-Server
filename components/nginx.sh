@@ -12,6 +12,18 @@ ACME=$STATE/acme
 # Where the WebSockets of the relay go: vguard, which components/guard.sh
 # puts up in front of strfry (a relay never goes without it).
 V_RELAY_WS=${V_RELAY_WS:-127.0.0.1:7777}
+# The listeners of vrelay serve, a line of the upstream each
+# (components/vrelay.sh, relay-vrelay.conf).
+V_VRELAY_UPSTREAM=${V_VRELAY_UPSTREAM:-"    server 127.0.0.1:7781 max_fails=0;"}
+# The access API of a team or channel server: vguard's on 127.0.0.1:7779, or
+# vrelay's on 127.0.0.1:7782 (components/vrelay.sh).
+ACCESS_HTTP=127.0.0.1:7779
+[ "$RELAY_ENGINE" = vrelay ] && has relay && ACCESS_HTTP=${V_ACCESS_HTTP:-127.0.0.1:7782}
+# The limits of an address on the relay (server.conf): nginx's with strfry
+# (relay.conf, http.conf); with vrelay, vrelay's own (vrelay.env).
+V_RELAY_IP_MAX_CONNECTIONS=$RELAY_IP_MAX_CONNECTIONS
+V_RELAY_IP_CONNECTS_PER_SEC=$RELAY_IP_CONNECTS_PER_SEC
+V_RELAY_IP_CONNECT_BURST=$RELAY_IP_CONNECT_BURST
 say "nginx: $HOSTS"
 
 # nginx workers (www-data) pass through /opt/veydan to the ACME directory
@@ -81,7 +93,7 @@ rm -f "$cf"
 #
 # A team or channel server (ACCESS_MODE, components/guard.sh): the app key
 # alone no longer uploads. A write with it is asked of vguard
-# (auth_request /_veydan_access → 127.0.0.1:7779/_access, which reads the
+# (auth_request /_veydan_access → $ACCESS_HTTP/_access, which reads the
 # Authorization of the upload: a member, 204, or not, 401); the peer key
 # and an upload key pass without it, and a download by the hash stays open.
 MEDIA_KEY_MAP="" V_MEDIA_KEY_GUARD="" V_MEDIA_REVOKE_LOCATION="" V_MEDIA_ACCESS_LOCATION=""
@@ -166,7 +178,7 @@ if [ -n "$media_access" ]; then
             return 204;
         }
         client_max_body_size 0;
-        proxy_pass http://127.0.0.1:7779/_access;
+        proxy_pass http://'"$ACCESS_HTTP"'/_access;
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
         proxy_set_header Authorization $http_authorization;
@@ -195,24 +207,48 @@ map $veydan_relay_denied $veydan_relay_gate {
     default 0;
 }'
 fi
+# The access info of an open relay is static: vguard has no [access] API in
+# this mode. Put it before the relay key gate so a client can discover it.
+if [ "$ACCESS_MODE" = open ]; then
+    V_ACCESS_LOCATION='    location = /.well-known/veydan-access/v1/info {
+        default_type application/json;
+        return 200 '\''{"v":1,"mode":"open","invite":false}'\'';
+    }'
 # The access API of vguard (join, members, invites; NIP-98 signed) under the
 # relay host, before the gate: one who joins by an invite may have no key.
-if access_on; then
+elif access_on; then
     V_ACCESS_LOCATION='    # The access API of vguard (ACCESS_MODE): /info and /join for anyone,
     # the rest signed (NIP-98) by a member or the owner. No key needed.
     location ^~ /.well-known/veydan-access/ {
         limit_req zone=veydan_relay burst=10 nodelay;
         client_max_body_size 4k;
-        proxy_pass http://127.0.0.1:7779;
+        proxy_pass http://'"$ACCESS_HTTP"';
         proxy_http_version 1.1;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header Host $host;
     }'
 fi
 
+# The texts above name what judges the access: vguard in front of strfry,
+# or vrelay (ACCESS_JUDGE of run.sh); the rules are the same.
+ACCESS_JUDGE=${ACCESS_JUDGE:-vguard}
+if [ "$ACCESS_JUDGE" != vguard ]; then
+    MEDIA_KEY_MAP=${MEDIA_KEY_MAP//vguard/$ACCESS_JUDGE}
+    RELAY_GATE_MAP=${RELAY_GATE_MAP//vguard/$ACCESS_JUDGE}
+    V_MEDIA_ACCESS_LOCATION=${V_MEDIA_ACCESS_LOCATION//vguard/$ACCESS_JUDGE}
+    V_ACCESS_LOCATION=${V_ACCESS_LOCATION//vguard/$ACCESS_JUDGE}
+fi
+V_ACCESS_JUDGE=$ACCESS_JUDGE
+PEER_ROLE_NOTE="# The peer key, alone: the other relays and vpush. The relay tells vguard
+# (X-Veydan-Role) that such a connection reads everything; with the app
+# key the read policy holds. Empty: no header at all."
+[ "$RELAY_ENGINE" = vrelay ] && has relay && PEER_ROLE_NOTE="# The peer key, alone: the other relays and vpush. vrelay tells a peer by
+# the key itself and reads no X-Veydan-Role (relay-vrelay.conf clears it);
+# the map stays for the sites of the media. Empty: no header at all."
+
 # The keys nginx compares, from server.conf. The relay takes the app key
 # (what the app sends) or the peer key (the other relays, vpush); with the
-# peer key it is a peer to vguard.
+# peer key it is a peer to the relay's read policy.
 cat <<EOF | put "$N/10-keys.conf" 0600 root:root
 # Keys of the network (server.conf). Made by run.sh.
 map \$arg_key \$veydan_key_query {
@@ -231,9 +267,7 @@ map "\$veydan_key_query\$veydan_key_header" \$veydan_relay_denied {
 }
 $RELAY_GATE_MAP
 $MEDIA_KEY_MAP
-# The peer key, alone: the other relays and vpush. The relay tells vguard
-# (X-Veydan-Role) that such a connection reads everything; with the app
-# key the read policy holds. Empty: no header at all.
+$PEER_ROLE_NOTE
 map \$arg_key \$veydan_peer_query {
     default 0;
     "$MESH_PEER_KEY" 1;
@@ -340,14 +374,19 @@ role_aliases() { # role_aliases <relay|media|vpush>
 
 # Turns on the 443 sites whose certificates exist.
 sites() {
-    local s kind h
+    local s kind h tpl
     for s in $(site_list); do
         kind=${s%%:*} h=${s#*:}
         cert_paths "$h"
         if [ "$DRY" = 1 ] || [ -f "$V_CERT" ]; then
             V_HOST=$h
             V_ALIASES=$(role_aliases "$kind")
-            render "$HERE/templates/nginx/$kind.conf" "$N/30-$kind.conf" 0600 root:root
+            # The relay of the vrelay engine has a site of its own: nginx
+            # passes the request as it came, the key with it, and vrelay
+            # decides (templates/nginx/relay-vrelay.conf).
+            tpl=$kind
+            [ "$kind" = relay ] && [ "$RELAY_ENGINE" = vrelay ] && tpl=relay-vrelay
+            render "$HERE/templates/nginx/$tpl.conf" "$N/30-$kind.conf" 0600 root:root
         fi
     done
 }

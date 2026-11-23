@@ -24,11 +24,49 @@
 #                                 (1 use, 7 days by default)
 #   veydan-server invite list | revoke <id>  the invites, or end one
 #   veydan-server members list | add <npub|hex> | remove <npub|hex>
+#   veydan-server relay-engine [strfry|vrelay]  the engine of the relay
+#                                 (RELAY_ENGINE): set, then veydan-server rerun
+#   veydan-server relay-import [--keep]  the history of strfry into vrelay:
+#                                 strfry export, then vrelay import (vrelay must
+#                                 be the engine; --keep keeps the export file)
+#   veydan-server relay-peer      this server's line in the mesh of vrelay (for
+#                                 RELAY_MESH_WG_PEERS of the others), its peers
+#   veydan-server relay-peer add [--replace] [--hub] [--stdout] '<name,endpoint,key,address,region[,hub]>'
+#                                 a server joins the mesh: WireGuard, the
+#                                 firewall and NATS here take it; the key it
+#                                 joins with goes to a file of root (passwords:
+#                                 pass it safely), or to the output (--stdout).
+#                                 A name there already only with --replace; a
+#                                 line that moves the hub only with --hub
+#   veydan-server relay-peer remove <name>  a server leaves the mesh
+#   veydan-server relay-peer rotate-leaf <region>  on the hub: a new password
+#                                 of the leaf link of a region
+#   veydan-server relay-peer apply  WireGuard, the firewall and NATS anew from
+#                                 server.conf, nothing else of the kit
+#   veydan-server relay-join [--key-file <file>]...  this server joins the
+#                                 cluster of the mesh, step by step, a check
+#                                 after each (a failed step stops it; run it
+#                                 again), then the kit again. The keys of
+#                                 relay-peer add from files (0600) or on the
+#                                 input, never as arguments
+#   veydan-server relay-admit <name>  on the first server of the mesh: the
+#                                 keyspaces get a copy in the region of a
+#                                 server that joins (relay-join tells when)
+#   veydan-server relay-nodetool <args>  nodetool of this node of Cassandra
+#   veydan-server relay-cleanup [--yes]  with vrelay the engine: strfry and
+#                                 vguard removed for good (units, users, their
+#                                 folders and the database of strfry); no way
+#                                 back after it. Asks for the word yes
+#   veydan-server audit           what listens where, the passwords of the store
+#                                 of the relay, the modes of the secrets; not 0
+#                                 on any finding (every run of the kit ends with it)
 set -euo pipefail
 
 STATE=${VEYDAN_STATE:-/opt/veydan}
 CONF=$STATE/server.conf
-G=/opt/vguard
+G=${VEYDAN_VGUARD_HOME:-/opt/vguard}
+VR=/opt/vrelay
+VRC=$VR/compose
 
 die() { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 need_root() { [ "$(id -u)" = 0 ] || die "run as root"; }
@@ -120,28 +158,353 @@ access_mode() {
     ( # shellcheck disable=SC1090
       . "$CONF" 2>/dev/null; printf '%s' "${ACCESS_MODE:-open}" )
 }
+# The engine of the relay (RELAY_ENGINE of server.conf): strfry when the
+# conf has none.
+relay_engine() {
+    ( # shellcheck disable=SC1090
+      . "$CONF" 2>/dev/null; printf '%s' "${RELAY_ENGINE:-strfry}" )
+}
+# The applied mode: the [access] table of vguard.toml (an absent table means
+# open, including on servers installed before access modes existed), or,
+# with vrelay, what vrelay.env says (vrelay access mode).
+# VEYDAN_VRELAY: a program in vrelay's place, for the tests.
+guard_mode() {
+    if [ "$(relay_engine)" = vrelay ]; then
+        if [ -n "${VEYDAN_VRELAY:-}" ]; then
+            VRELAY_ENV_FILE=$VR/etc/vrelay.env "$VEYDAN_VRELAY" access mode
+            return
+        fi
+        [ -r "$VR/etc/vrelay.env" ] || { printf '%s' missing; return; }
+        # vrelay access refuses root: always as the user vrelay.
+        need_root
+        runuser -u vrelay -- env VRELAY_ENV_FILE="$VR/etc/vrelay.env" "$VR/bin/vrelay" access mode
+        return
+    fi
+    local config=$G/etc/vguard.toml
+    [ -r "$config" ] || { printf '%s' missing; return; }
+    local binary=${VEYDAN_VGUARD:-$G/bin/vguard}
+    "$binary" mode --config "$config"
+}
+# Where the applied mode is, for the texts: vguard.toml, or vrelay.env.
+applied_in() {
+    if [ "$(relay_engine)" = vrelay ]; then printf '%s' "vrelay.env VRELAY_ACCESS_MODE"; else printf '%s' "vguard.toml [access] mode"; fi
+}
 # What touches the members and invites needs a relay that is not open.
 need_access() {
     [ -r "$CONF" ] || die "no $CONF, or not readable: run install.sh once, as root"
-    conf_has relay || die "this server has no relay: members and invites are the relay's (vguard)"
+    conf_has relay || die "this server has no relay: members and invites are the relay's"
     [ "$(access_mode)" != open ] \
         || die "this server is open (ACCESS_MODE=open): anyone who has its card uses it, and there are no members or invites. veydan-server mode team (or channel), then veydan-server rerun"
+    local configured applied
+    configured=$(access_mode)
+    applied=$(guard_mode) || die "cannot read the access mode of the relay ($(applied_in)); run veydan-server rerun"
+    [ "$configured" = "$applied" ] \
+        || die "ACCESS_MODE=$configured differs from $(applied_in)=$applied; run veydan-server rerun"
 }
-# The CLI of vguard, as the user vguard (it writes the files of data/).
-# VEYDAN_VGUARD: a program in its place, for the tests (then no HUP).
+# The command line of the access files: vguard's with strfry (as the user
+# vguard), vrelay's own with vrelay (vrelay access, as the user vrelay; the
+# same subcommands and output). VEYDAN_VGUARD, VEYDAN_VRELAY: a program in
+# its place, for the tests (then no HUP).
 guard() {
-    if [ -n "${VEYDAN_VGUARD:-}" ]; then
+    if [ "$(relay_engine)" = vrelay ]; then
+        if [ -n "${VEYDAN_VRELAY:-}" ]; then
+            "$VEYDAN_VRELAY" access "$@"
+        else
+            need_root
+            runuser -u vrelay -- env VRELAY_ENV_FILE="$VR/etc/vrelay.env" "$VR/bin/vrelay" access "$@"
+        fi
+    elif [ -n "${VEYDAN_VGUARD:-}" ]; then
         "$VEYDAN_VGUARD" access --config "$G/etc/vguard.toml" "$@"
     else
         need_root
         runuser -u vguard -- "$G/bin/vguard" access --config "$G/etc/vguard.toml" "$@"
     fi
 }
-# The running vguard reads the files again (it would within a minute anyway).
+# The running engine reads the files again (it would within a minute anyway;
+# vrelay reads the invites at every join).
 guard_reload() {
-    [ -z "${VEYDAN_VGUARD:-}" ] || return 0
-    systemctl reload vguard || echo "vguard did not take the signal: it reads the files again within a minute" >&2
+    [ -z "${VEYDAN_VGUARD:-}${VEYDAN_VRELAY:-}" ] || return 0
+    local unit=vguard
+    [ "$(relay_engine)" = vrelay ] && unit=vrelay
+    systemctl reload "$unit" || echo "$unit did not take the signal: it reads the files again within a minute" >&2
 }
+# The audit (veydan-server audit; the end of every run of the kit). Each
+# finding is a line; the exit is 1 when there is one.
+#   - every socket that listens on an address other than loopback, against
+#     what the components of this server open: the ports of sshd, 80 and 443
+#     for the sites, the ports of a call node and of a bridge, the clients of
+#     DHCP (68, 546/udp), what ufw lets in, and AUDIT_ALLOW of server.conf;
+#   - no port of a container published but on loopback;
+#   - the statistics of vrelay (7783, 7784) and the page of NATS (8222) on
+#     loopback alone, and so in vrelay.env and vrelay-write.env;
+#   - with vrelay: the second lock of the containers (DOCKER-USER) in place,
+#     the local lock of the ports (nft table inet veydan_local, as
+#     vrelay-local-lock.sh would put it for the users there are), the token
+#     of the statistics 640 root:vrelay-stats and named in the env files,
+#     the access files vrelay's and no link, the default login of Cassandra
+#     and an anonymous client of NATS refused, no secret in vrelay.env;
+#   - the files of secrets: no access by others; those of vrelay and of its
+#     containers 0600.
+# docker compose of the store and the bus of vrelay: mesh.yaml alone on a
+# server of the mesh, the relay's compose.yaml and the kit's layer else.
+vrc() {
+    if [ -f "$VRC/mesh.yaml" ]; then
+        docker compose --project-directory "$VRC" --env-file "$VRC/.env" -f "$VRC/mesh.yaml" "$@"
+    else
+        docker compose --project-directory "$VRC" --env-file "$VRC/.env" -f "$VRC/compose.yaml" -f "$VRC/compose.kit.yaml" "$@"
+    fi
+}
+# The checks of a server of the mesh (spec/security.md 12, the merge of
+# services/relay/deploy/cluster/audit.sh): WireGuard, the clock, Cassandra's
+# settings and system_auth, the leaf link, the containers, ufw, the disk.
+# Inside audit(): finding, mesh_ip and the settings of server.conf are its.
+audit_mesh() {
+    local e n k ts now hs f m t ms yaml dcs repl dc c ports mode user sec caps src
+    note() { printf '\033[1;33m!!\033[0m audit: %s\n' "$*"; }
+    now=$(date +%s)
+    # S-W1, S-W2: every peer answered within 3 minutes; the keys root's alone.
+    if hs=$(wg show wg0 latest-handshakes 2>/dev/null); then
+        for e in ${RELAY_MESH_WG_PEERS:-}; do
+            IFS=, read -r n _ k _ <<< "$e"
+            ts=$(awk -v k="$k" '$1 == k {print $2}' <<< "$hs")
+            if [ -z "$ts" ] || [ "$ts" = 0 ]; then finding "WireGuard: no handshake ever with $n (veydan-server relay-peer)"
+            elif [ $((now - ts)) -gt 180 ]; then finding "WireGuard: the last handshake with $n was $((now - ts)) s ago"
+            fi
+        done
+    else
+        finding "WireGuard: wg0 is not up (systemctl status wg-quick@wg0)"
+    fi
+    for f in /etc/wireguard/wg0.conf /etc/wireguard/wg0.key /etc/wireguard/psk-*; do
+        [ -f "$f" ] || continue
+        m=$(stat -c '%a %U' "$f")
+        [ "$m" = "600 root" ] || finding "$f is $m, not 600 root"
+    done
+    # S-T1: the clock (spec/cluster.md 1.6): 50 ms a warning, 500 ms a finding.
+    if t=$(chronyc tracking 2>/dev/null | awk -F: '/^System time/ {print $2}') && [ -n "$t" ]; then
+        ms=$(awk -v o="$(awk '{print $1}' <<< "$t")" 'BEGIN { o = o < 0 ? -o : o; printf "%d", o * 1000 }')
+        if [ "$ms" -ge 500 ]; then finding "the clock is off by $ms ms (chronyc tracking): stop vrelay-write here until it is back (a writer with a wrong clock writes wrong deletions)"
+        elif [ "$ms" -ge 50 ]; then note "the clock is off by $ms ms (chronyc tracking; 500 ms is a finding)"
+        fi
+    else
+        finding "chrony does not answer (chronyc tracking): the mesh needs it (systemd-timesyncd is SNTP only)"
+    fi
+    # S-C1, S-C5: logins and permissions on; no functions or views of users.
+    yaml=$(vrc exec -T cassandra cat /tmp/conf/cassandra.yaml 2>/dev/null || true)
+    if [ -n "$yaml" ]; then
+        grep -qx 'authenticator: PasswordAuthenticator' <<< "$yaml" && grep -qx 'authorizer: CassandraAuthorizer' <<< "$yaml" \
+            || finding "Cassandra: authenticator or authorizer is not set (PasswordAuthenticator, CassandraAuthorizer)"
+        grep -qx 'user_defined_functions_enabled: false' <<< "$yaml" && grep -qx 'materialized_views_enabled: false' <<< "$yaml" \
+            || finding "Cassandra: user-defined functions or materialized views are on"
+    else
+        finding "Cassandra: its cassandra.yaml could not be read (is the container up?)"
+    fi
+    # S-C4: the roles have a copy in every datacenter.
+    dcs=$(vrc exec -T cassandra nodetool status 2>/dev/null | awk '/^Datacenter:/ {print $2}' || true)
+    repl=$(vrc exec -T cassandra bash -c 'umask 077; f=$(mktemp); printf "[PlainTextAuthProvider]\nusername = vrelay\npassword = %s\n" "$(cat /secrets/cassandra-vrelay-password)" > "$f"; cqlsh "$0" 9042 --credentials "$f" -e "SELECT replication FROM system_schema.keyspaces WHERE keyspace_name = '"'"'system_auth'"'"'"; r=$?; rm -f "$f"; exit $r' "$mesh_ip" 2>&1 || true)
+    if grep -q NetworkTopologyStrategy <<< "$repl"; then
+        for dc in $dcs; do grep -q "'$dc'" <<< "$repl" || finding "Cassandra: system_auth has no copy in the datacenter $dc (spec/cluster.md 1.7)"; done
+    else
+        finding "Cassandra: system_auth is not on NetworkTopologyStrategy ($(grep -o '{.*}' <<< "$repl" || tail -n1 <<< "$repl"))"
+    fi
+    # The leaf link of a region that is not the hub.
+    if grep -q 'remotes: \[' "$VRC/secrets/nats/nats.conf" 2>/dev/null; then
+        n=$(curl -fsS http://127.0.0.1:8222/leafz 2>/dev/null | jq -r '.leafnodes // 0' 2>/dev/null || echo 0)
+        [ "${n:-0}" -ge 1 ] || finding "NATS: the leaf link to the hub region is down (curl -s 127.0.0.1:8222/leafz; docker logs of nats)"
+    fi
+    # S-F1, S-D1: the host's network, nothing published; no root, no
+    # capability, no new privileges.
+    for c in $(docker ps --filter label=com.docker.compose.project=vrelay --format '{{.Names}}' 2>/dev/null); do
+        mode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$c")
+        ports=$(docker inspect -f '{{json .HostConfig.PortBindings}}' "$c")
+        [ "$mode" = host ] && { [ "$ports" = "{}" ] || [ "$ports" = null ]; } || finding "$c: network $mode, published $ports (the mesh runs on the host's network, nothing published)"
+        user=$(docker inspect -f '{{.Config.User}}' "$c")
+        sec=$(docker inspect -f '{{json .HostConfig.SecurityOpt}}' "$c")
+        caps=$(docker inspect -f '{{json .HostConfig.CapDrop}}' "$c")
+        { [ -n "$user" ] && [ "${user%%:*}" != 0 ] && [ "${user%%:*}" != root ] && [[ "$sec" == *no-new-privileges* ]] && [[ "$caps" == *ALL* ]]; } \
+            || finding "$c: user '$user', security_opt $sec, cap_drop $caps (no root, no-new-privileges, cap_drop ALL)"
+    done
+    # S-F3: the firewall that keeps the ports of the mesh on wg0.
+    if [ "${FIREWALL:-ufw}" = ufw ]; then
+        ufw status 2>/dev/null | grep -q '^Status: active' || finding "ufw is not active: the ports of the mesh are open beyond wg0 only by it"
+    fi
+    # S-R1: the data on dm-crypt (a warning).
+    src=$(findmnt -no SOURCE --target "$VR/data" 2>/dev/null || true)
+    if [ -n "$src" ] && ! lsblk -s -no TYPE "$src" 2>/dev/null | grep -qx crypt; then
+        note "$VR/data is on $src, not on dm-crypt (spec/security.md 11)"
+    fi
+}
+audit() {
+    need_root
+    [ -r "$CONF" ] || die "no $CONF, or not readable: run install.sh once, as root"
+    local findings=0 allowed=" " a p first last proto addr port proc line f mode out engine
+    finding() { printf '\033[1;31mxx\033[0m audit: %s\n' "$*"; findings=$((findings + 1)); }
+    # shellcheck disable=SC1090
+    . "$CONF"
+    engine=${RELAY_ENGINE:-strfry}
+    has() { [[ " ${COMPONENTS:-} " == *" $1 "* ]]; }
+    allow() { allowed+="$1 "; }
+    allow udp/68; allow udp/546
+    if has relay || has media || has vpush || [ -n "$(ls "$STATE"/nginx/30-*.conf 2>/dev/null)" ]; then allow tcp/80; allow tcp/443; fi
+    if has call; then
+        allow "tcp/${CALL_PORT:-8443}"; allow tcp/3478; allow udp/3478
+        allow "tcp/${CALL_SFU_PORT:-3479}"; allow "udp/${CALL_SFU_PORT:-3479}"
+        allow "udp/${CALL_RELAY_PORTS:-49152-49999}"
+    fi
+    has bridge && allow "tcp/${BRIDGE_PORT:-443}"
+    for a in ${AUDIT_ALLOW:-}; do allow "$a"; done
+    # A server of the mesh of vrelay (spec/security.md 2): Cassandra (7000,
+    # 9042) and NATS (4222, the routes 6222, the leaf links 7422 on the hub)
+    # on the mesh address alone, WireGuard's port open.
+    local mesh_ip="" mesh_ports=""
+    if has relay && [ "$engine" = vrelay ] && [ -f "$VRC/mesh.yaml" ]; then
+        mesh_ip=${RELAY_MESH_WG%%/*}
+        mesh_ports=" tcp/7000 tcp/9042 tcp/4222 "
+        grep -q '^cluster {' "$VRC/secrets/nats/nats.conf" 2>/dev/null && mesh_ports+="tcp/6222 "
+        grep -q '^  listen: ".*:7422"$' "$VRC/secrets/nats/nats.conf" 2>/dev/null && mesh_ports+="tcp/7422 "
+        allow udp/51820
+    fi
+    # What ufw lets in: a component opened it (a call node, the agent of a
+    # private kit), or the admin did.
+    if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
+        while read -r p _; do
+            [[ "$p" =~ ^([0-9]+)(:([0-9]+))?(/(tcp|udp))?$ ]] || continue
+            first=${BASH_REMATCH[1]} last=${BASH_REMATCH[3]:-} proto=${BASH_REMATCH[5]:-}
+            for proto in ${proto:-tcp udp}; do allow "$proto/$first${last:+-$last}"; done
+        done < <(ufw status 2>/dev/null | awk '$2 == "ALLOW" || ($2 == "(v6)" && $3 == "ALLOW") {print $1}')
+    fi
+    port_allowed() { # port_allowed <proto> <port>
+        local e r
+        for e in $allowed; do
+            [ "${e%%/*}" = "$1" ] || continue
+            r=${e#*/}
+            if [[ "$r" == *-* ]]; then
+                [ "$2" -ge "${r%-*}" ] && [ "$2" -le "${r#*-}" ] && return 0
+            else
+                [ "$2" = "$r" ] && return 0
+            fi
+        done
+        return 1
+    }
+    # The sockets: ss -H -t -u -l -n -p, one a line.
+    while read -r proto _ _ _ addr _ proc; do
+        port=${addr##*:} addr=${addr%:*} addr=${addr#[} addr=${addr%]} addr=${addr%%%*}
+        if [ -n "$mesh_ip" ] && [ "$proto" = tcp ] && { [ "$port" = 7001 ] || [ "$port" = 7222 ]; }; then
+            finding "tcp/$port listens on ${addr:-*}: Cassandra's legacy TLS port and NATS's gateways are not used in the mesh, and nothing listens there"
+        fi
+        # The statistics of vrelay (7783 serve, 7784 write) and the page of
+        # NATS (8222) are for the agent on this host: loopback alone.
+        if [ "$proto" = tcp ] && { [ "$port" = 7783 ] || [ "$port" = 7784 ] || [ "$port" = 8222 ]; }; then
+            case "$addr" in
+                127.*|::1|::ffff:127.*) ;;
+                *) finding "tcp/$port listens on ${addr:-*}: the statistics of the relay (7783, 7784) and the page of NATS (8222) listen on loopback alone"; continue ;;
+            esac
+        fi
+        case "$addr" in 127.*|::1|::ffff:127.*) continue ;; esac
+        proc=$(printf '%s' "$proc" | sed -n 's/.*users:(("\([^"]*\)".*/\1/p')
+        [ "$proc" = sshd ] && [ "$proto" = tcp ] && continue
+        if [ -n "$mesh_ip" ] && [[ "$mesh_ports" == *" $proto/$port "* ]]; then
+            [ "$addr" = "$mesh_ip" ] || finding "$proto/$port listens on ${addr:-*} (${proc:-?}): a port of the mesh listens on $mesh_ip (wg0) alone"
+            continue
+        fi
+        if [ -n "$mesh_ip" ] && [ "$addr" = "$mesh_ip" ]; then
+            finding "$proto/$port listens on the mesh address $mesh_ip (${proc:-?}): nothing of the kit opens it there"
+            continue
+        fi
+        port_allowed "$proto" "$port" && continue
+        finding "$proto/$port listens on ${addr:-*} (${proc:-?}): no component of this server opens it (AUDIT_ALLOW of server.conf for a program of your own)"
+    done < <(ss -H -t -u -l -n -p 2>/dev/null | sort -u)
+    if command -v docker >/dev/null && systemctl is-active -q docker 2>/dev/null; then
+        while read -r line; do
+            case "$line" in
+                *0.0.0.0:*|*"[::]:"*|*":::"*) finding "a container publishes a port on every address: $line" ;;
+            esac
+        done < <(docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null)
+    fi
+    if [[ " ${COMPONENTS:-} " == *" relay "* ]] && [ "$engine" = vrelay ]; then
+        "$VR/bin/vrelay-docker-lock.sh" check 2>/dev/null \
+            || finding "the second lock of the containers of the relay is not in DOCKER-USER: systemctl restart vrelay-docker-lock"
+        # The local lock: JMX, the page of NATS, the statistics, CQL and the
+        # clients of NATS for their own users (vrelay-local-lock.sh).
+        if [ ! -x "$VR/bin/vrelay-local-lock.sh" ]; then
+            finding "no local lock of the ports of the relay ($VR/bin/vrelay-local-lock.sh): veydan-server rerun"
+        elif ! "$VR/bin/vrelay-local-lock.sh" check 2>/dev/null; then
+            finding "the local lock of the ports of the relay (nft table inet veydan_local) is not in place as it would be put, for the users there are now: systemctl restart vrelay-local-lock"
+        fi
+        # The token of the statistics: root's, read by the group vrelay-stats.
+        f=$VR/stats/token
+        if [ -e "$f" ] || [ -L "$f" ]; then
+            [ -f "$f" ] && [ ! -L "$f" ] && [ "$(stat -c '%a %U %G' "$f")" = "640 root vrelay-stats" ] \
+                || finding "$f: $(stat -c '%a %U:%G' "$f" 2>/dev/null), not a file of 640 root:vrelay-stats"
+            [ "$(stat -c '%a %U %G' "$VR/stats")" = "750 root vrelay-stats" ] || finding "$VR/stats: $(stat -c '%a %U:%G' "$VR/stats"), not 750 root:vrelay-stats"
+            for line in "$VR/etc/vrelay.env" "$VR/etc/vrelay-write.env"; do
+                [ -f "$line" ] && grep -q '^VRELAY_STATS_LISTEN=' "$line" || continue
+                grep -qx "VRELAY_STATS_TOKEN_FILE=$f" "$line" "$VR/etc/vrelay.env" \
+                    || printf '\033[1;33m!!\033[0m audit: %s\n' "$line: the statistics without VRELAY_STATS_TOKEN_FILE (a vrelay that has no token yet answers any process here)"
+            done
+        fi
+        # The access files: vrelay's own, never a link (root works there by
+        # no path; a link was put by somebody else).
+        for f in "$VR"/access/*; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            if [ -L "$f" ]; then finding "$f is a symbolic link: vrelay writes its access files itself; remove it (ls -l $VR/access)"
+            elif [ "$(stat -c %U "$f")" != vrelay ]; then finding "$f is $(stat -c %U "$f")'s, not vrelay's"
+            fi
+        done
+        out=$(vrc exec -T cassandra bash -c 'umask 077; f=$(mktemp); printf "[PlainTextAuthProvider]\nusername = cassandra\npassword = cassandra\n" > "$f"; cqlsh "$0" 9042 --credentials "$f" -e "SELECT release_version FROM system.local"; r=$?; rm -f "$f"; exit $r' "${mesh_ip:-127.0.0.1}" 2>&1) \
+            && finding "Cassandra takes the default login cassandra/cassandra"
+        case "$out" in
+            *"Bad credentials"*|*"are incorrect"*) ;;
+            *) [ -z "$out" ] || [[ "$out" == *release_version* ]] || finding "Cassandra: the default login could not be tried: $(printf '%s' "$out" | tail -n1)" ;;
+        esac
+        line=""
+        if { exec 3<>"/dev/tcp/${mesh_ip:-127.0.0.1}/4222"; } 2>/dev/null; then
+            IFS= read -r -t 5 line <&3 || true
+            printf 'CONNECT {"verbose":false,"pedantic":false}\r\nPING\r\n' >&3
+            IFS= read -r -t 5 line <&3 || true
+            exec 3<&-
+        fi
+        case "$line" in
+            *"Authorization Violation"*) ;;
+            PONG*|+OK*) finding "NATS takes a client without a user and a password" ;;
+            *) finding "NATS on ${mesh_ip:-127.0.0.1}:4222: no answer to an anonymous client (${line:-nothing})" ;;
+        esac
+        [ -z "$mesh_ip" ] || audit_mesh
+        if grep -Eq '^VRELAY_[A-Z_]*(PASSWORD|_KEY|SECRET|CREDENTIALS)=' "$VR/etc/vrelay.env" 2>/dev/null; then
+            finding "$VR/etc/vrelay.env holds a secret itself; a secret goes in a file named by a _FILE setting"
+        fi
+        # The settings of the statistics: loopback, 7783 for serve, 7784 for write.
+        for f in "$VR/etc/vrelay.env" "$VR/etc/vrelay-write.env"; do
+            [ -f "$f" ] || continue
+            line=$(grep -E '^VRELAY_STATS_LISTEN=' "$f" | tail -n1 || true)
+            [ -n "$line" ] || continue
+            [[ "${line#*=}" =~ ^127\.0\.0\.1:778[34]$ ]] || finding "$f: $line: the statistics listen on 127.0.0.1 alone (7783 serve, 7784 write)"
+        done
+    fi
+    # The secrets: none open to others; those of vrelay 0600.
+    for f in "$STATE/server.conf" "$STATE"/nginx/*.conf "$STATE/manifest-node.json" "$STATE/server.txt" \
+             /opt/vguard/etc/access.key /opt/vpush/etc/secrets/* /opt/blossom/etc/blossom.env \
+             "$VR"/etc/secrets/* "$VR"/access/* "$VRC"/secrets/* "$VRC"/secrets/nats/* "$VRC/.env"; do
+        [ -f "$f" ] || continue
+        mode=$(stat -c '%a' "$f")
+        [ $((8#$mode & 8#007)) = 0 ] || finding "$f is open to others (mode $mode)"
+        case "$f" in
+            # NATS's config is root's, read by the group of NATS's user
+            # (lib/mesh.sh mesh_nats_conf: 0640 in a folder of 0750).
+            "$VRC"/secrets/nats/*) [ "$(stat -c '%a %U' "$f")" = "640 root" ] || finding "$f: $(stat -c '%a %U' "$f"), not 640 root" ;;
+            "$VR"/etc/secrets/*|"$VRC"/secrets/*) [ "$mode" = 600 ] || finding "$f: mode $mode, not 600" ;;
+        esac
+    done
+    if [ "$findings" -gt 0 ]; then
+        printf '\033[1;31mxx\033[0m audit: %s finding(s)\n' "$findings"
+        return 1
+    fi
+    if [ -n "$mesh_ip" ]; then
+        printf '\033[1;32m>>\033[0m audit: nothing found (the sockets, the store and the bus of the relay, the mesh, the secrets)\n'
+        return 0
+    fi
+    printf '\033[1;32m>>\033[0m audit: nothing found (the sockets, the store and the bus of the relay, the secrets)\n'
+}
+
 invite_re='^vi1\.[A-Za-z0-9_-]{1,128}\.[A-Za-z0-9_-]{1,128}$'
 key_re='^(npub1[02-9ac-hj-np-z]{58}|[0-9a-f]{64})$'
 
@@ -242,7 +605,7 @@ case "${1:-}" in
         fi
         ;;
     invite)
-        # An invite of vguard: a code that lets N people in for D days.
+        # An invite of the relay: a code that lets N people in for D days.
         need_access
         case "${2:-}" in
             list)
@@ -264,8 +627,8 @@ case "${1:-}" in
                         *) die "veydan-server invite [--uses N] [--days D] [--label L] | list | revoke <id>" ;;
                     esac
                 done
-                code=$(guard invite --uses "$uses" --days "$days" "${args[@]}" | tail -n1 | tr -d '[:space:]') || die "vguard made no invite"
-                [[ "$code" =~ $invite_re ]] || die "vguard gave no invite code: $code"
+                code=$(guard invite --uses "$uses" --days "$days" "${args[@]}" | tail -n1 | tr -d '[:space:]') || die "the relay made no invite (vguard, or vrelay access)"
+                [[ "$code" =~ $invite_re ]] || die "the relay gave no invite code: $code"
                 guard_reload
                 link=$(server_link "$code") || exit 1
                 echo "invite: $uses use(s), $days day(s); the code alone, for the app's \"Join by code\":" >&2
@@ -313,16 +676,18 @@ case "${1:-}" in
             revoke)
                 pair "${3:-}" "${4:-}"
                 [ -d "$keys" ] && [ -w "$keys" ] || die "no $keys, or not writable: a server with media, as root"
-                tmp=$(mktemp "$keys/.revoke.XXXXXX")
-                printf '%s\n' "$now" > "$tmp"
-                # nginx's workers read and replace it.
-                [ "$(id -u)" != 0 ] || chown www-data:www-data "$tmp"
-                chmod 0600 "$tmp"
-                mv -f "$tmp" "$keys/$3.$4"
-                # Revocations older than any key still alive (32 days).
-                for f in "$keys"/*.*; do
-                    if [ -f "$f" ] && [ "$(cat "$f")" -lt $((now - 32 * 86400)) ] 2>/dev/null; then rm -f "$f"; fi
-                done
+                # The folder is nginx's workers' (www-data), who read and
+                # replace the files: root writes nothing there by a path a
+                # link could take, the user of the folder does it.
+                as=() owner=$(stat -c %U "$keys")
+                [ "$(id -u)" != 0 ] || [ "$owner" = root ] || as=(runuser -u "$owner" --)
+                # shellcheck disable=SC2016  # the script of www-data, its own $1..$4
+                "${as[@]}" sh -c 'umask 077; t=$(mktemp "$1/.revoke.XXXXXX") || exit 1
+                    printf "%s\n" "$2" > "$t" && mv -fT "$t" "$1/$3.$4" || { rm -f "$t"; exit 1; }
+                    # Revocations older than any key still alive (32 days).
+                    for f in "$1"/*.*; do
+                        if [ -f "$f" ] && [ ! -L "$f" ] && [ "$(cat "$f")" -lt $(($2 - 32 * 86400)) ] 2>/dev/null; then rm -f "$f"; fi
+                    done' revoke "$keys" "$now" "$3" "$4" || die "upload-key: $keys/$3.$4 could not be written"
                 echo "upload-key: the keys of $3 $4 made until now are refused" >&2
                 ;;
             ""|-*)
@@ -352,6 +717,92 @@ case "${1:-}" in
                 ;;
         esac
         ;;
+    relay-engine)
+        # Stored in server.conf; the kit puts the engine up at its next run,
+        # moves nginx to it once it answers, and stops the other one (kept,
+        # with its data).
+        if [ -z "${2:-}" ]; then
+            [ -r "$CONF" ] || die "no $CONF, or not readable: run install.sh once, as root"
+            relay_engine; echo
+            exit 0
+        fi
+        case "$2" in strfry|vrelay) ;; *) die "veydan-server relay-engine strfry|vrelay" ;; esac
+        conf_has relay || die "this server has no relay"
+        set_conf RELAY_ENGINE "$2"
+        echo "relay-engine: $2 in $CONF; the kit puts it up and stops the other at its next run: veydan-server rerun" >&2
+        [ "$2" != vrelay ] || [ ! -d /opt/strfry ] || echo "relay-engine: vrelay starts empty; the history of strfry comes with veydan-server relay-import, after the rerun" >&2
+        if [ "$2" = strfry ] && [ ! -x /opt/strfry/bin/strfry ]; then
+            echo "relay-engine: strfry is not installed here: the rerun puts up strfry and vguard as a fresh install of them would (strfry built or from the kit, vguard of VGUARD_VERSION), with an empty database; the members and invites of vrelay are not carried to vguard" >&2
+        fi
+        ;;
+    relay-cleanup)
+        # strfry and vguard for good, on a server whose engine is vrelay
+        # (the kit's relay-cleanup.sh). Never part of a run of the kit.
+        need_root
+        shift
+        exec bash "$(kit)/relay-cleanup.sh" "$@"
+        ;;
+    relay-import)
+        # The events of strfry into the store of vrelay: strfry export of the
+        # database here (strfry may be stopped), then vrelay import, which
+        # skips what the store has (a second run stores nothing new). Never
+        # part of a run of the kit. The way back is by hand (README).
+        need_root
+        [ -r "$CONF" ] || die "no $CONF, or not readable: run install.sh once, as root"
+        [ "$(relay_engine)" = vrelay ] || die "relay-import: the engine is $(relay_engine); veydan-server relay-engine vrelay and veydan-server rerun first"
+        [ -x /opt/strfry/bin/strfry ] && [ -f /opt/strfry/etc/strfry.conf ] || die "relay-import: no strfry here (/opt/strfry): nothing to import"
+        [ -x "$VR/bin/vrelay" ] || die "relay-import: no $VR/bin/vrelay: veydan-server rerun"
+        "$VR/bin/vrelay" import --help >/dev/null 2>&1 \
+            || die "relay-import: this vrelay ($("$VR/bin/vrelay" --version 2>/dev/null || true)) has no import yet; a vrelay with vrelay import is needed"
+        keep=0
+        case "${2:-}" in --keep) keep=1 ;; "") ;; *) die "veydan-server relay-import [--keep]" ;; esac
+        install -d -m 0750 -o root -g vrelay "$VR/import"
+        file=$VR/import/strfry-$(date -u +%Y%m%dT%H%M%SZ).jsonl
+        # The events hold the messages (sealed) and the groups: root and the
+        # group vrelay only.
+        ( umask 027; : > "$file" ) && chgrp vrelay "$file"
+        echo "relay-import: strfry export → $file" >&2
+        runuser -u strfry -- /opt/strfry/bin/strfry --config=/opt/strfry/etc/strfry.conf export > "$file" \
+            || { rm -f "$file"; die "relay-import: strfry export failed (see above)"; }
+        echo "relay-import: $(wc -l < "$file") events; vrelay import" >&2
+        rc=0
+        # In the mesh, as the user write of NATS (it tells the queue what it deleted).
+        mode_env=()
+        [ -f "$VR/etc/vrelay-write.env" ] && mapfile -t mode_env < <(grep -E '^VRELAY_[A-Z_]+=' "$VR/etc/vrelay-write.env")
+        runuser -u vrelay -- env VRELAY_ENV_FILE="$VR/etc/vrelay.env" "${mode_env[@]}" "$VR/bin/vrelay" import "$file" || rc=$?
+        if [ "$keep" = 1 ] || [ "$rc" != 0 ]; then
+            echo "relay-import: the export stays: $file" >&2
+        else
+            rm -f "$file"
+        fi
+        [ "$rc" = 0 ] || die "relay-import: vrelay import failed (see above); run it again: what is stored is skipped"
+        ;;
+    relay-peer)
+        # The mesh of vrelay (the kit's relay-mesh.sh, lib/mesh.sh).
+        need_root
+        shift
+        exec bash "$(kit)/relay-mesh.sh" peer "$@"
+        ;;
+    relay-join)
+        # The keys come from files or on the input, never as arguments
+        # (relay-mesh.sh refuses one): every user reads the command lines.
+        need_root
+        shift
+        exec bash "$(kit)/relay-mesh.sh" join "$@"
+        ;;
+    relay-admit)
+        need_root
+        shift
+        exec bash "$(kit)/relay-mesh.sh" admit "$@"
+        ;;
+    relay-nodetool)
+        need_root
+        shift
+        exec bash "$(kit)/relay-mesh.sh" nodetool "$@"
+        ;;
+    audit)
+        audit
+        ;;
     add)
         need_root
         [ -n "${2:-}" ] || die "veydan-server add relay|media|vpush|call"
@@ -374,6 +825,10 @@ case "${1:-}" in
         units="$units nginx"
         # shellcheck disable=SC2086
         systemctl --no-pager status $units 2>/dev/null | grep -E '^[●○×x]|Active:' || true
+        # The store and the bus of vrelay, in docker.
+        if [ -f "$VRC/compose.kit.yaml" ] && command -v docker >/dev/null; then
+            docker ps -a --filter label=com.docker.compose.project=vrelay --format '{{.Names}}  {{.Status}}' 2>/dev/null || true
+        fi
         ;;
     *)
         # The usage: the head of this file.

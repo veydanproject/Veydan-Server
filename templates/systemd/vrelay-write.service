@@ -1,0 +1,57 @@
+[Unit]
+# services/relay/deploy/vrelay-write.service, with what a server of the kit
+# adds: a reload (SIGHUP: the env file), many more files open, and docker,
+# where its store and its bus run.
+Description=vrelay write (the Veydan relay: takes events from the queue, stores and delivers them)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=vrelay
+Group=vrelay
+${V_VRELAY_UNIT_ENV}
+ExecStart=/opt/vrelay/bin/vrelay write
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+UMask=0027
+LimitNOFILE=1048576
+# Its share of the box (services/relay/spec/tuning.md 7); its memory a
+# sixteenth of the machine, 512 MB to 2 GB (vrelay_memory, lib/common.sh).
+CPUWeight=100
+MemoryMax=${V_VRELAY_WRITE_MAX}
+# No transparent huge pages for the allocator: a huge page given back in part
+# stays charged whole to this limit (20 000 connections: 1 589 MB charged with
+# them, 1 124 MB without, measured).
+Environment=MIMALLOC_ALLOW_THP=0
+OOMScoreAdjust=200
+
+# The writer needs the network and its settings, nothing else of the machine.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

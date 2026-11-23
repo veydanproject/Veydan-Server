@@ -40,7 +40,7 @@ path = "/opt/vpush/data/vpush.db"
 [relays]
 policy = "allow_list"
 
-# --- kit begin: the apps served (FCM_APPS of server.conf, keys in
+# --- kit begin: the apps served (FCM_APPS and APNS_APPS of server.conf, keys in
 # etc/secrets/), the gateway the phones are woken through with
 # PUSH_GATEWAY=veydan (its key made by vpush in data/gateway.key), and every
 # relay of the network. Written anew on every run.
@@ -56,6 +56,6 @@ test_per_hour = 3
 devices_total = 100000
 
 [pipeline]
-throttle_secs = 20
+throttle_secs = 5
 device_cap = 30
 device_window_secs = 60

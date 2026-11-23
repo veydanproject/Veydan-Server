@@ -39,6 +39,14 @@ vpush_release=""
 [ -f "$HERE/bin/RELEASE" ] && vpush_release=$(cat "$HERE/bin/RELEASE")
 vcall_release=""
 [ -f "$HERE/bin/vcall.RELEASE" ] && vcall_release=$(cat "$HERE/bin/vcall.RELEASE")
+# The vrelay installed, when it is the engine.
+vrelay_release=""
+if has relay && [ "${RELAY_ENGINE:-strfry}" = vrelay ] && [ -x "$(target /opt/vrelay/bin/vrelay)" ]; then
+    vrelay_release=$("$(target /opt/vrelay/bin/vrelay)" --version 2>/dev/null | awk '{print $2}')
+fi
+# strfry's, when it is the engine (a server of vrelay has none to name).
+strfry_release="$STRFRY_TAG ($STRFRY_COMMIT)"
+[ "${RELAY_ENGINE:-strfry}" = vrelay ] && strfry_release=""
 media_store=disk
 [ -n "$S3_ENDPOINT" ] && media_store="$S3_ENDPOINT/$S3_BUCKET"
 # Who uses the relay (ACCESS_MODE; open on a server without one).
@@ -52,13 +60,14 @@ json=$(jq -n \
     --argjson call "$call_entry" \
     --arg app_key "$MESH_APP_KEY" --arg peer_key "$MESH_PEER_KEY" \
     --argjson peers "$peers" --argjson media_peers "$media_peers" --arg media_store "$media_store" \
-    --arg strfry "$STRFRY_TAG ($STRFRY_COMMIT)" --arg blossom "$BLOSSOM_COMMIT (deno $DENO_VERSION)" \
+    --arg strfry "$strfry_release" --arg blossom "$BLOSSOM_COMMIT (deno $DENO_VERSION)" \
     --arg libsql "$LIBSQL_VERSION" --arg vpush "$vpush_release" --arg vcall "$vcall_release" \
-    --arg access "$access" \
+    --arg access "$access" --arg engine "${RELAY_ENGINE:-strfry}" --arg vrelay "$vrelay_release" \
     '{
       generated_at: $generated, base_domain: $base, network: $network, server: $server, region: $region,
       components: ($components | split(" ")),
       access: $access,
+      relay_engine: $engine,
       manifest: {
         relays: [$relay | select(. != null)],
         media:  [$media | select(. != null)],
@@ -75,7 +84,8 @@ json=$(jq -n \
         s3_env: "/opt/blossom/etc/blossom.env",
         vpush_secrets: "/opt/vpush/etc/secrets/"
       },
-      versions: {strfry: $strfry, blossom: $blossom, libsql: $libsql, vpush: $vpush, vcall: $vcall}
+      versions: ({strfry: $strfry, vrelay: $vrelay, blossom: $blossom, libsql: $libsql, vpush: $vpush, vcall: $vcall}
+                 | if $engine == "vrelay" then del(.strfry) else . end)
     }')
 printf '%s\n' "$json" | put "$STATE/manifest-node.json" 0600 root:root
 
@@ -124,15 +134,21 @@ card() {
     echo "   wss://<relay>/?key=<key>   or header   X-API-Key: <key>"
     has media && echo "   the same on media: an upload (PUT/HEAD /upload, /mirror, DELETE of a blob) needs it; a download does not"
     if has media && [ "$access" != open ] && [ "$MEDIA_UPLOAD_KEY" = required ]; then
-        echo "   $access: with the app key only a member uploads (nginx asks vguard); the peer key and upload keys as before"
+        echo "   $access: with the app key only a member uploads (nginx asks ${ACCESS_JUDGE:-vguard}); the peer key and upload keys as before"
     fi
-    [ "$access" != channel ] || echo "   channel: the relay answers without the key; vguard lets anyone read and members write"
+    [ "$access" != channel ] || echo "   channel: the relay answers without the key; ${ACCESS_JUDGE:-vguard} lets anyone read and members write"
     echo "Peer key (relay ↔ relay, vpush → relay):   $MESH_PEER_KEY"
     echo
     echo "== This server =="
     if has relay; then
         echo "Relay peers:         ${PEERS:-none}"
-        echo "   router: /opt/strfry/etc/router.conf   sync: systemctl list-timers strfry-sync.timer"
+        if [ "${RELAY_ENGINE:-strfry}" = vrelay ] && [ "${MESH:-0}" = 1 ]; then
+            echo "   vrelay shares the store and the bus of the mesh$([ -z "$PEERS" ] || echo "; a strfry relay's router connects to it")"
+        elif [ "${RELAY_ENGINE:-strfry}" = vrelay ]; then
+            [ -z "$PEERS" ] || echo "   vrelay connects to no peer: their strfry routers connect to it"
+        else
+            echo "   router: /opt/strfry/etc/router.conf   sync: systemctl list-timers strfry-sync.timer"
+        fi
     fi
     if has media; then
         echo "Media files:         $media_store"
@@ -155,17 +171,19 @@ card() {
     echo "Configuration:       $STATE/server.conf"
     echo
     echo "== Versions =="
-    has relay && echo "strfry   $STRFRY_TAG ($STRFRY_COMMIT)"
+    has relay && [ "${RELAY_ENGINE:-strfry}" = strfry ] && echo "strfry   $STRFRY_TAG ($STRFRY_COMMIT)"
+    has relay && [ "${RELAY_ENGINE:-strfry}" = vrelay ] && echo "vrelay   ${vrelay_release:-?} (Cassandra ${CASSANDRA_IMAGE_TAG%%@*}, NATS ${NATS_IMAGE_TAG%%@*})"
     has media && echo "blossom  $BLOSSOM_COMMIT on deno $DENO_VERSION"
     has media && echo "libsql   $LIBSQL_VERSION"
     has vpush && echo "vpush    ${vpush_release:-?}"
     has call && echo "vcall    ${vcall_release:-?}"
     echo
     echo "== Services =="
-    for s in strfry strfry-router strfry-sync.timer libsql blossom vpush vcall nginx; do
+    for s in strfry strfry-router strfry-sync.timer vrelay vrelay-write libsql blossom vpush vcall nginx; do
         case $s in
-            strfry) has relay || continue ;;
-            strfry-router|strfry-sync.timer) has relay && [ -n "$PEERS" ] || continue ;;
+            strfry) has relay && [ "${RELAY_ENGINE:-strfry}" = strfry ] || continue ;;
+            strfry-router|strfry-sync.timer) has relay && [ "${RELAY_ENGINE:-strfry}" = strfry ] && [ -n "$PEERS" ] || continue ;;
+            vrelay|vrelay-write) has relay && [ "${RELAY_ENGINE:-strfry}" = vrelay ] || continue ;;
             libsql|blossom) has media || continue ;;
             vpush) has vpush || continue ;;
             vcall) has call || continue ;;

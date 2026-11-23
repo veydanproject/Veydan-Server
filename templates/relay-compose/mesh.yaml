@@ -1,0 +1,170 @@
+# The store and the bus of a server of the mesh of vrelay: Cassandra, a node
+# of the cluster with a datacenter a region, and NATS, the server of its
+# region with a JetStream domain of its own (services/relay/spec/cluster.md,
+# spec/security.md; the files of services/relay/deploy/cluster, as a server
+# of the kit runs them). Used alone, in place of compose.yaml and
+# compose.kit.yaml, when server.conf names RELAY_MESH_WG:
+#   docker compose -f mesh.yaml ...
+# by components/vrelay.sh, veydan-server and relay-mesh.sh; the values are
+# in .env, which the kit writes from server.conf.
+#
+# - The host's network (spec/security.md 3): each program binds the address
+#   it is told, the mesh address of this server (wg0) or loopback, and docker
+#   publishes nothing, so it adds no rule that would pass by ufw.
+# - vrelay serve and write run on the host (systemd), as on a server alone.
+# - Every container: a user of the host made for it, no capability, no new
+#   privileges, a read-only root with a tmpfs /tmp, memory limits and rotated
+#   logs. The passwords are files of ${VEYDAN_SECRETS_DIR} (0600 each to the
+#   user that reads it).
+
+name: ${COMPOSE_PROJECT_NAME:-vrelay}
+
+x-mesh: &mesh
+  network_mode: host
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  logging:
+    driver: json-file
+    options: {max-size: 20m, max-file: "3"}
+
+services:
+  # ---- Cassandra: a node of the cluster, its datacenter the region ----------
+  cassandra:
+    <<: *mesh
+    image: cassandra:${CASSANDRA_TAG:?}
+    restart: unless-stopped
+    init: true
+    user: "${CASSANDRA_UID:?}:${CASSANDRA_GID:?}"
+    read_only: true
+    # exec: JNA links its native library from there.
+    tmpfs: ["/tmp:size=64m,mode=1777,exec"]
+    entrypoint: ["/bin/bash", "/mesh/cassandra-entrypoint.sh"]
+    command: ["cassandra", "-f"]
+    environment:
+      MAX_HEAP_SIZE: ${CASSANDRA_HEAP:?}
+      # The image counts it from the memory of the host, not of the container
+      # (cassandra-env.sh: a quarter of `free -m`): the kit gives it (spec/tuning.md 1).
+      MAX_DIRECT_MEMORY_SIZE: ${CASSANDRA_DIRECT:?}
+      CASSANDRA_CLUSTER_NAME: ${CASSANDRA_CLUSTER_NAME:?}
+      CASSANDRA_DC: ${CASSANDRA_DC:?}
+      CASSANDRA_RACK: ${CASSANDRA_RACK:-r1}
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_NUM_TOKENS: "16"
+      CASSANDRA_SEEDS: ${CASSANDRA_SEEDS:?}
+      CASSANDRA_LISTEN_ADDRESS: ${MESH_IP:?}
+      CASSANDRA_BROADCAST_ADDRESS: ${MESH_IP}
+      CASSANDRA_RPC_ADDRESS: ${MESH_IP}
+      CASSANDRA_BROADCAST_RPC_ADDRESS: ${MESH_IP}
+      # false only while veydan-server relay-join adds a region (cluster.md 1.8).
+      CASSANDRA_AUTO_BOOTSTRAP: ${CASSANDRA_AUTO_BOOTSTRAP:-true}
+      # JMX stays on loopback (LOCAL_JMX=yes, the default of cassandra-env.sh).
+      LOCAL_JMX: "yes"
+      # AlwaysPreTouch and the GC log are the image's own (jvm-server.options,
+      # cassandra-env.sh: gc.log, 10 files of 10 MB, in /var/log/cassandra). One
+      # heap dump at most, a fixed name: a second OOM does not fill the disk.
+      # The direct buffers once more, last on the command line: the flag
+      # that wins whatever the image's script counts.
+      JVM_EXTRA_OPTS: -XX:MaxDirectMemorySize=${CASSANDRA_DIRECT:?} -XX:HeapDumpPath=/var/log/cassandra/cassandra.hprof
+    mem_limit: ${CASSANDRA_MEM_LIMIT:?}
+    # Swap off for the JVM (spec/tuning.md 4), and the host's OOM killer
+    # takes the relay before the store.
+    memswap_limit: ${CASSANDRA_MEM_LIMIT:?}
+    oom_score_adj: -500
+    pids_limit: 4096
+    ulimits:
+      nofile: {soft: 100000, hard: 100000}
+      memlock: -1
+      nproc: 32768
+    volumes:
+      - ${CASSANDRA_DATA_DIR:?}:/var/lib/cassandra
+      - ${CASSANDRA_LOG_DIR:?}:/var/log/cassandra
+      - ./mesh/cassandra-entrypoint.sh:/mesh/cassandra-entrypoint.sh:ro
+      - ./mesh/cassandra-overrides.yaml:/mesh/overrides.yaml:ro
+      # the passwords of Cassandra's user (the audit's questions)
+      - ${VEYDAN_SECRETS_DIR:?}:/secrets:ro
+    healthcheck:
+      # Healthy when the native port (on the mesh address) answers a CQL
+      # OPTIONS with SUPPORTED, as compose.yaml's: no JVM started at every
+      # check. The container's user may open 9042 (vrelay-local-lock.sh).
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/${MESH_IP:?}/9042 && printf '\\004\\0\\0\\0\\005\\0\\0\\0\\0' >&3 && r=$$(timeout 5 head -c 5 <&3 | od -An -tx1 | tr -d ' \\n') && [[ $$r == 84??????06 ]]"]
+      interval: 10s
+      timeout: 20s
+      retries: 30
+      start_period: 90s
+    stop_grace_period: 2m
+
+  # ---- one-shot: roles, and the system keyspaces on NetworkTopologyStrategy --
+  cassandra-init:
+    <<: *mesh
+    image: cassandra:${CASSANDRA_TAG:?}
+    restart: "no"
+    user: "${CASSANDRA_UID:?}:${CASSANDRA_GID:?}"
+    read_only: true
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    mem_limit: 512m
+    entrypoint: ["/bin/bash", "-c", "bash /kit/cassandra-init.sh && bash /mesh/cassandra-system.sh"]
+    environment:
+      HOME: /tmp
+      CASSANDRA_HOST: ${MESH_IP:?}
+      CASSANDRA_USER: ${CASSANDRA_USER:?}
+      CASSANDRA_APP_USER: ${CASSANDRA_APP_USER:-vrelay}
+      # the role of the tables on a server that joined the mesh (kit/cassandra-init.sh)
+      CASSANDRA_MIGRATE_USER: ${CASSANDRA_MIGRATE_USER:-vrelay_migrate}
+      VRELAY_KEYSPACE: ${VRELAY_KEYSPACE:-vrelay}
+      CASSANDRA_DC: ${CASSANDRA_DC:?}
+    volumes:
+      - ./kit/cassandra-init.sh:/kit/cassandra-init.sh:ro
+      - ./mesh/cassandra-system.sh:/mesh/cassandra-system.sh:ro
+      - ${VEYDAN_SECRETS_DIR:?}:/secrets:ro
+
+  # ---- one-shot: CQL as a role of the kit, the statements on its input ------
+  # (relay-admit: the keyspaces of a region that joins, as our superuser;
+  # relay-join: its checks, as vrelay; CQL_AS of cql.sh)
+  cql:
+    <<: *mesh
+    image: cassandra:${CASSANDRA_TAG:?}
+    restart: "no"
+    profiles: ["tools"]
+    user: "${CASSANDRA_UID:?}:${CASSANDRA_GID:?}"
+    read_only: true
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    mem_limit: 512m
+    entrypoint: ["/bin/bash", "/mesh/cql.sh"]
+    environment:
+      HOME: /tmp
+      CASSANDRA_USER: ${CASSANDRA_USER:?}
+      CQL_HOST: ${MESH_IP:?}
+      CASSANDRA_APP_USER: ${CASSANDRA_APP_USER:-vrelay}
+      CASSANDRA_MIGRATE_USER: ${CASSANDRA_MIGRATE_USER:-vrelay_migrate}
+    volumes:
+      - ./mesh/cql.sh:/mesh/cql.sh:ro
+      - ${VEYDAN_SECRETS_DIR:?}:/secrets:ro
+
+  # ---- NATS: the server of the region, its own JetStream domain -------------
+  nats:
+    <<: *mesh
+    image: nats:${NATS_TAG:?}
+    restart: unless-stopped
+    user: "${NATS_UID:?}:${NATS_GID:?}"
+    read_only: true
+    command: ["nats-server", "-c", "/etc/nats/nats.conf"]
+    environment:
+      # Go's soft limit under the container's (spec/tuning.md 6).
+      GOMEMLIMIT: ${NATS_GOMEMLIMIT:?}
+    mem_limit: ${NATS_MEM_LIMIT:?}
+    memswap_limit: ${NATS_MEM_LIMIT:?}
+    oom_score_adj: -300
+    pids_limit: 512
+    volumes:
+      - ${NATS_DATA_DIR:?}:/data
+      # made by the kit (lib/mesh.sh): it holds the passwords, root's, 0640 to
+      # the group of NATS's user. The folder, not the file: the kit writes a
+      # new file and renames
+      # it, and a file mounted alone would stay the old one for a reload.
+      - ${VEYDAN_SECRETS_DIR:?}/nats:/etc/nats:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null 'http://127.0.0.1:8222/healthz?js-enabled-only=true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s

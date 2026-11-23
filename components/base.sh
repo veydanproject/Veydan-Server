@@ -6,8 +6,10 @@ say "base: packages"
 run apt-get update -q
 apt_install ca-certificates curl git jq openssl unzip xz-utils gettext-base
 # nginx and certificates only where there is a site to serve: a bridge or a
-# node of calls alone listens on its own ports.
-[ -z "$HOSTS" ] || apt_install nginx libnginx-mod-http-js
+# node of calls alone listens on its own ports. nginx and njs come from
+# nginx.org (components/nginx-official.sh), not from Debian.
+# shellcheck source=components/nginx-official.sh
+[ -z "$HOSTS" ] || . "$HERE/components/nginx-official.sh"
 [ -n "$HOSTS" ] && [ "$TLS" = letsencrypt ] && apt_install certbot
 [ "$FIREWALL" = ufw ] && apt_install ufw
 
@@ -23,7 +25,7 @@ mkdirp "$STATE/nginx" 0700 root:root
     echo "# network takes the network part of this file."
     echo
     echo "# ---- the network"
-    for v in BASE_DOMAIN NETWORK MESH_RELAYS MESH_MEDIA MESH_ORIGINS MESH_APP_KEY MESH_PEER_KEY \
+    for v in BASE_DOMAIN NETWORK MESH_RELAYS MESH_MEDIA MESH_ORIGINS MESH_APP_KEY MESH_PEER_KEY MESH_STATS_KEY \
              S3_ENDPOINT S3_BUCKET S3_REGION S3_ACCESS_KEY S3_SECRET_KEY \
              TLS ACME_EMAIL FIREWALL ADMIN_PUBKEY VLINK_REGISTRY_HOST \
              $EXTRA_NET_VARS; do
@@ -32,7 +34,10 @@ mkdirp "$STATE/nginx" 0700 root:root
     echo
     echo "# ---- this server"
     for v in SERVER COMPONENTS RELAY_HOST MEDIA_HOST VPUSH_HOST RELAY_ALIASES MEDIA_ALIASES VPUSH_ALIASES \
-             REGION RELAY_NAME RELAY_RETENTION_DAYS SKIP_DNS_CHECK FCM_APPS PUSH_GATEWAY MEDIA_UPLOAD_KEY ACCESS_MODE \
+             REGION RELAY_NAME RELAY_RETENTION_DAYS \
+             RELAY_ENGINE RELAY_DC RELAY_CASSANDRA_HEAP_MB RELAY_STORE_SEEDS RELAY_BUS_ROUTES RELAY_MESH_WG RELAY_MESH_WG_PEERS RELAY_MESH_WG_ENDPOINT RELAY_JOIN_KEY_HOURS \
+             RELAY_IP_MAX_CONNECTIONS RELAY_IP_CONNECTS_PER_SEC RELAY_IP_CONNECT_BURST RELAY_MAX_CONNECTIONS RELAY_IP6_NET_MAX_CONNECTIONS NGINX_WORKER_CONNECTIONS AUDIT_ALLOW \
+             SKIP_DNS_CHECK FCM_APPS APNS_APPS APNS_KEY_ID APNS_TEAM_ID PUSH_GATEWAY MEDIA_UPLOAD_KEY ACCESS_MODE \
              CALL_PUBLIC_IP CALL_PORT CALL_SFU_PORT CALL_RELAY_PORTS CALL_REGISTRY_URL \
              $EXTRA_CONF_VARS; do
         printf '%s=%q\n' "$v" "${!v:-}"

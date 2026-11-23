@@ -13,9 +13,11 @@ BASE_DOMAIN=example.org
 NETWORK=
 
 # Every relay and every media server of the network, short or full names,
-# space separated. Each relay connects to all the others (strfry router,
-# both ways) and syncs with them every few minutes, so an event published
-# anywhere reaches every relay. A media server that has not got a file
+# space separated. Each relay of the strfry engine connects to all the
+# others (strfry router, both ways) and syncs with them every few minutes,
+# so an event published anywhere reaches every relay. A relay of the vrelay
+# engine connects to none: the routers of the strfry relays bring it what
+# they have and take what it has (README, "The vrelay engine"). A media server that has not got a file
 # asks the bucket (S3 below) or, without one, the next media server.
 MESH_RELAYS="relay"
 MESH_MEDIA="media"
@@ -29,6 +31,12 @@ MESH_ORIGINS=""
 # is for relay ↔ relay and push → relay. Made by the installer when empty.
 MESH_APP_KEY=
 MESH_PEER_KEY=
+# The key of the statistics of the relays of vrelay (the users of a day, 7
+# and 30 days for vcloud): 64 hex, the same on every server, never in a
+# page. Made by the installer where the network starts, and carried to the
+# next servers by the join key; a network made before it: one key by hand
+# (openssl rand -hex 32) on every server. Empty: no sketches.
+MESH_STATS_KEY=
 
 # Media files: a bucket shared by every media server of the network (any
 # S3: Cloudflare R2, MinIO, …), or, with an empty endpoint, the disk of
@@ -96,11 +104,11 @@ MEDIA_UPLOAD_KEY=required
 # Who uses the relay: open (anyone who has the card of the server), team
 # (the owner, ADMIN_PUBKEY, and the people invited: veydan-server invite)
 # or channel (anyone reads without the key, members write: veydan-server
-# members add). Members and invites live in the vguard of this one relay,
-# so team and channel are for a server of one relay. Empty: team at the
-# first run of such a server (asked), open for a network of several relays
-# and for a server installed before the setting. Team and channel need
-# ADMIN_PUBKEY above and vguard 0.7.0 or later. Change later with:
+# members add). Members and invites live in this one relay (its vguard, or
+# vrelay), so team and channel are for a server of one relay. Empty: team at
+# the first run of such a server (asked), open for a network of several
+# relays and for a server installed before the setting. Team and channel
+# need ADMIN_PUBKEY above, and with strfry vguard 0.7.0 or later. Change later with:
 # veydan-server mode open|team|channel, then veydan-server rerun.
 # This sample says open, as its ADMIN_PUBKEY is empty.
 ACCESS_MODE=open
@@ -113,6 +121,92 @@ RELAY_NAME=
 # 0: keep for ever (the database grows without end). At least 7 otherwise.
 RELAY_RETENTION_DAYS=90
 
+# The engine of the relay: strfry (strfry, vguard in front, the router and
+# the sync timer between the relays; the default, for now) or vrelay (our
+# own relay: vrelay serve and vrelay write on this machine, Cassandra and
+# NATS beside them in docker, from Debian's packages; README, "The vrelay
+# engine"). A rerun with the other word installs it beside the one there,
+# moves the relay site of nginx to it once it answers, and then stops and
+# disables the other one, which stays installed with its data: the way back
+# is the same rerun with the old word (veydan-server relay-engine strfry).
+# vrelay needs a machine of 8 GB of memory or more, and keeps no history of
+# strfry until veydan-server relay-import is run. A fresh server of vrelay
+# has nothing of strfry or vguard; on a switched one veydan-server
+# relay-cleanup removes them for good (no way back after it).
+RELAY_ENGINE=strfry
+
+# vrelay only. The datacenter of Cassandra on this server: fixed at the first
+# start of its node (Cassandra refuses another name later). Empty: SERVER;
+# in the mesh below, its region: REGION in lower case (eu-1 → eu), which is
+# also its JetStream domain and the region in the names of the queue
+# (lower-case letters and digits, a letter first).
+RELAY_DC=
+# vrelay only. The heap of Cassandra in MB. Empty: from the memory of the
+# machine: a fifth of it, 1.5 to 4 GB (README, "The vrelay engine").
+RELAY_CASSANDRA_HEAP_MB=
+# vrelay only: the mesh, servers in regions with one store (a datacenter of
+# Cassandra a region) and a NATS a region joined by a leaf link, over
+# WireGuard alone (README, "Two regions"). off: this server is alone.
+# RELAY_MESH_WG: this server's address in the WireGuard of the mesh, with the
+# prefix of the whole mesh (10.77.1.1/16; a region a /24 by custom:
+# 10.77.1.x eu, 10.77.2.x us).
+RELAY_MESH_WG=off
+# The other servers of the mesh, space separated, each
+#   name,endpoint,public key,mesh address,region[,hub]
+# the line veydan-server relay-peer prints on that server (and veydan-server
+# relay-peer add '<line>' puts here on a server already in the mesh). hub:
+# that region accepts the leaf links of NATS; none marked: this server's
+# region does. The first server of a mesh has none; the next one names it.
+#   RELAY_MESH_WG_PEERS="eu-1,203.0.113.10:51820,<its public key>,10.77.1.1,eu,hub"
+RELAY_MESH_WG_PEERS=""
+# The seeds of Cassandra, the same on every server. Empty: the first server
+# (by name) of each region, the first two from three servers on.
+RELAY_STORE_SEEDS=""
+# The other NATS servers of this region (their mesh addresses): empty with
+# one server a region; two with three. Set only by the procedure of README,
+# "A region of three": routes given to a standalone NATS lose its streams.
+RELAY_BUS_ROUTES=""
+# This server's endpoint in its line for the others (veydan-server
+# relay-peer), <IPv4>[:port] or [<IPv6>][:port]. Empty: its public address
+# (the first address of the internet among its MESH_ORIGINS entry,
+# CALL_PUBLIC_IP, its own addresses and the DNS of its relay); a private
+# address only when set here (two servers of one provider's network).
+RELAY_MESH_WG_ENDPOINT=
+# How long a key of veydan-server relay-peer add is taken here (relay-join),
+# in hours from when it was made: an older one is refused, and a new one is
+# made on that peer (relay-peer add --replace).
+RELAY_JOIN_KEY_HOURS=24
+
+# The limits of the relay. Per address of a client: connections at once,
+# new connections a second and the burst above that rate; nginx counts them
+# with strfry, vrelay itself with vrelay (by the address nginx tells it, so
+# nginx does not count them twice). RELAY_MAX_CONNECTIONS: connections at
+# once in all (vrelay only); empty, what the memory of vrelay serve holds,
+# counted from the machine (README, "The vrelay engine": 30 000 on 16 GB
+# with the relay alone); a number is taken as it is.
+# RELAY_IP6_NET_MAX_CONNECTIONS: connections at
+# once of every address of one IPv6 /48 together (vrelay only; a mobile
+# operator may give /64s to many phones out of one /48, so not lower; IPv4
+# has no such tier). Below RELAY_IP_MAX_CONNECTIONS it is raised to it, with a
+# warning.
+RELAY_IP_MAX_CONNECTIONS=20
+RELAY_IP_CONNECTS_PER_SEC=10
+RELAY_IP_CONNECT_BURST=20
+RELAY_MAX_CONNECTIONS=
+RELAY_IP6_NET_MAX_CONNECTIONS=2000
+
+# nginx: connections of one worker (a WebSocket takes two: the client and
+# the relay behind), and files it may open (twice that). There is a worker a
+# core.
+NGINX_WORKER_CONNECTIONS=32768
+
+# The audit at the end of every run (veydan-server audit): what may listen
+# on an address other than loopback, beside what the components of this
+# server open (ssh, 80 and 443 for the sites, the ports of a call node or a
+# bridge). "tcp/9000 udp/5000": a program of your own; the run fails while
+# anything else listens there.
+AUDIT_ALLOW=""
+
 # 1: do not compare the DNS of every name with this server's addresses
 # (behind NAT, or a provider that gives the public address elsewhere).
 SKIP_DNS_CHECK=0
@@ -121,6 +215,15 @@ SKIP_DNS_CHECK=0
 # account JSON named fcm-<app id>.json beside the installer (or any *.json
 # of a service account, when FCM_APPS names one app).
 FCM_APPS=""
+
+# Push to iPhones: the iOS apps served, space separated (the app id is the
+# bundle id), and for each the key of APNs, apns-<app id>.p8, beside the
+# installer (or any .p8, when APNS_APPS names one app). The Key ID of the key
+# and the Team ID of the Apple developer account: one key serves every app
+# of the team, in production and in the sandbox.
+APNS_APPS=""
+APNS_KEY_ID=""
+APNS_TEAM_ID=""
 
 # The node of calls (component "call"): reached at the bare IP, not through
 # nginx. Empty address: this server's in MESH_ORIGINS, else its first one.

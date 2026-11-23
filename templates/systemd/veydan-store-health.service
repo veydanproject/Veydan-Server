@@ -1,0 +1,16 @@
+[Unit]
+# The health of Cassandra for the agent of vcloud: nodetool in the container
+# of this server, into /run/veydan/store-health.json (components/vrelay.sh,
+# services/relay/spec/stats.md 13). Run by veydan-store-health.timer.
+Description=Veydan: the health of the store of the relay, for the agent
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# root: docker exec reaches the container; nothing else is written.
+ExecStart=/opt/vrelay/bin/store-health.sh
+TimeoutStartSec=55
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true

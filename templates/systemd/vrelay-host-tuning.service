@@ -1,0 +1,17 @@
+[Unit]
+# What sysctl cannot set for Cassandra on this host (services/relay/spec/
+# tuning.md 4): no transparent huge pages taken by force, and a readahead of
+# 8 KB on the disk of /opt/vrelay/data (Cassandra 5.0 warns at its start
+# above that on an SSD). Before docker, at every boot.
+Description=vrelay: the kernel settings of the host of Cassandra
+Before=docker.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo madvise > /sys/kernel/mm/transparent_hugepage/enabled; echo never > /sys/kernel/mm/transparent_hugepage/defrag'
+ExecStart=/bin/sh -c 'src=$$(findmnt -no SOURCE --target /opt/vrelay/data); for d in "$$src" "/dev/$$(lsblk -no PKNAME "$$src" 2>/dev/null | head -n1)"; do [ -b "$$d" ] && blockdev --setra 16 "$$d"; done; true'
+
+[Install]
+WantedBy=multi-user.target

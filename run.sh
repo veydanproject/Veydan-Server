@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034  # the network and answer variables are read by the components
-# Veydan server, the installer proper: relay (strfry), media (blossom with
+# Veydan server, the installer proper: relay (strfry, or vrelay), media (blossom with
 # its own index and the bucket of the network), push (vpush) behind nginx,
-# and the node of calls (vcall) beside it, on Debian 13, without docker.
+# and the node of calls (vcall) beside it, on Debian 13 (docker only for vrelay).
 # Everything of an app is in /opt/<app>. install.sh finds the kit and runs
 # this file; run it directly from a checkout.
 #
@@ -35,6 +35,8 @@ HERE=$(cd "$(dirname "$0")" && pwd -P)
 . "$HERE/lib/common.sh"
 # shellcheck source=lib/release.sh
 . "$HERE/lib/release.sh"
+# shellcheck source=lib/mesh.sh
+. "$HERE/lib/mesh.sh"
 # shellcheck source=versions.conf
 . "$HERE/versions.conf"
 
@@ -94,12 +96,16 @@ fi
 # Defaults, then what this server was installed with, then the file given
 # (or server.conf beside the installer), then the questions.
 
-BASE_DOMAIN="" NETWORK="" MESH_RELAYS="" MESH_MEDIA="" MESH_ORIGINS="" MESH_APP_KEY="" MESH_PEER_KEY=""
+BASE_DOMAIN="" NETWORK="" MESH_RELAYS="" MESH_MEDIA="" MESH_ORIGINS="" MESH_APP_KEY="" MESH_PEER_KEY="" MESH_STATS_KEY=""
 S3_ENDPOINT="" S3_BUCKET="" S3_REGION="" S3_ACCESS_KEY="" S3_SECRET_KEY=""
 TLS=letsencrypt ACME_EMAIL="" FIREWALL=ufw ADMIN_PUBKEY="" VLINK_REGISTRY_HOST=""
-SERVER="" COMPONENTS="" RELAY_HOST="" MEDIA_HOST="" VPUSH_HOST="" REGION="" RELAY_NAME="" SKIP_DNS_CHECK=0 FCM_APPS="" PUSH_GATEWAY="" MEDIA_UPLOAD_KEY="" ACCESS_MODE=""
+SERVER="" COMPONENTS="" RELAY_HOST="" MEDIA_HOST="" VPUSH_HOST="" REGION="" RELAY_NAME="" SKIP_DNS_CHECK=0 FCM_APPS="" APNS_APPS="" APNS_KEY_ID="" APNS_TEAM_ID="" PUSH_GATEWAY="" MEDIA_UPLOAD_KEY="" ACCESS_MODE=""
 RELAY_ALIASES="" MEDIA_ALIASES="" VPUSH_ALIASES=""
 RELAY_RETENTION_DAYS=90
+# The engine of the relay and the limits (server.conf.example).
+RELAY_ENGINE=strfry RELAY_DC="" RELAY_CASSANDRA_HEAP_MB="" RELAY_STORE_SEEDS="" RELAY_BUS_ROUTES="" RELAY_MESH_WG=off RELAY_MESH_WG_PEERS="" RELAY_MESH_WG_ENDPOINT="" RELAY_JOIN_KEY_HOURS=24
+RELAY_IP_MAX_CONNECTIONS=20 RELAY_IP_CONNECTS_PER_SEC=10 RELAY_IP_CONNECT_BURST=20 RELAY_MAX_CONNECTIONS="" RELAY_IP6_NET_MAX_CONNECTIONS=2000
+NGINX_WORKER_CONNECTIONS=32768 AUDIT_ALLOW=""
 CALL_PUBLIC_IP="" CALL_PORT=8443 CALL_SFU_PORT=3479 CALL_RELAY_PORTS=49152-49999 CALL_REGISTRY_URL=""
 # Of older installs; read and set aside.
 MEDIA_INDEX_HOST="" MESH_INDEX_TOKEN="" MEDIA_MODE=""
@@ -160,8 +166,11 @@ if [ -n "$JOIN" ]; then
     key=${JOIN#veydan-join-1.}
     [ "$key" != "$JOIN" ] || die "$(msg join_bad)"
     net=$(printf '%s' "$key" | base64 -d 2>/dev/null) || die "$(msg join_bad)"
-    # Lines of NAME=value and nothing else: the key is sourced as a file.
-    printf '%s\n' "$net" | grep -v '^$' | grep -qv '^[A-Z][A-Z0-9_]*=' && die "$(msg join_bad)"
+    # Lines of NAME=value and nothing else: the key is sourced as a file, so
+    # a value is what printf %q of base.sh writes and nothing a shell would
+    # run ($(...), backquotes, ;): plain characters, a character after a
+    # backslash, or '' alone. The key comes from another server.
+    printf '%s\n' "$net" | grep -v '^$' | grep -qvE "^[A-Z][A-Z0-9_]*=(''|([A-Za-z0-9._:/+=,@%^~-]|\\\\.)*)$" && die "$(msg join_bad)"
     joinfile=$(mktemp)
     printf '%s\n' "$net" > "$joinfile"
     # shellcheck disable=SC1090
@@ -183,8 +192,9 @@ for c in $COMPONENTS; do
     [ -f "$HERE/components/$c.sh" ] || [ "$c" = relay ] || [ "$c" = media ] || die "unknown component: $c"
 done
 # A relay goes up only with its read policy: refused here, before anything
-# is built or installed (components/guard.sh checks it again).
-if has relay && ! vguard_at_hand; then die "$NO_VGUARD"; fi
+# is built or installed (components/guard.sh checks it again). vrelay is its
+# own read policy and needs no vguard.
+if has relay && [ "${RELAY_ENGINE:-strfry}" != vrelay ] && ! vguard_at_hand; then die "$NO_VGUARD"; fi
 if [ -z "$BASE_DOMAIN" ] && sites_wanted; then
     ask BASE_DOMAIN q_domain
     [ -n "$BASE_DOMAIN" ] || die "BASE_DOMAIN is empty: the domain of this server"
@@ -298,12 +308,23 @@ fi
 
 # The keys of the network: made once, here, when the network starts. A
 # server without a relay or push has no use for them.
+NETWORK_STARTS=0
 for k in $(sites_wanted && echo MESH_APP_KEY MESH_PEER_KEY); do
     if [ -z "${!k}" ]; then
         printf -v "$k" '%s' "$(secret)"
         say "$k: made"
+        NETWORK_STARTS=1
     fi
 done
+# The key of the statistics of the relays (vrelay; services/relay/spec/
+# stats.md 2): the same on every server, so it is made only where the
+# network starts and comes to the others with its join key. A server of a
+# network made before it has none until the admin gives them all one
+# (components/vrelay.sh says so).
+if [ "$NETWORK_STARTS" = 1 ] && [ -z "$MESH_STATS_KEY" ]; then
+    MESH_STATS_KEY=$(secret)
+    say "MESH_STATS_KEY: made"
+fi
 # A network of this one server, unless the file names more. A joining
 # server adds itself: the key came from a server that does not know it.
 if has relay && [ -z "$MESH_RELAYS" ]; then MESH_RELAYS=$RELAY_HOST; fi
@@ -321,6 +342,9 @@ fi
 [[ "$REGION" =~ ^[A-Za-z0-9_-]+$ ]] || die "REGION: letters, digits, - and _ only"
 case "$PUSH_GATEWAY" in veydan|off) ;; *) die "PUSH_GATEWAY is veydan or off" ;; esac
 case "$MEDIA_UPLOAD_KEY" in required|open) ;; *) die "MEDIA_UPLOAD_KEY is required or open" ;; esac
+if has media && [ "$ACCESS_MODE" != open ] && [ "$MEDIA_UPLOAD_KEY" != required ]; then
+    die "$(msg error_media_private)"
+fi
 has media && [ "$MEDIA_UPLOAD_KEY" = open ] && warn "$(msg warn_media_open)"
 case "$ACCESS_MODE" in open|team|channel) ;; *) die "ACCESS_MODE is open, team or channel" ;; esac
 # The mode is the relay's (vguard); a server without one has nothing to apply it to.
@@ -340,10 +364,48 @@ RELAY_RETENTION_DAYS=$((10#$RELAY_RETENTION_DAYS))
 if [ "$RELAY_RETENTION_DAYS" -gt 0 ] && [ "$RELAY_RETENTION_DAYS" -lt 7 ]; then
     die "RELAY_RETENTION_DAYS: below 7 a phone that was off for a week would miss its messages; 0 keeps for ever"
 fi
+# The engine of the relay (components/vrelay.sh, components/relay-engine.sh).
+RELAY_ENGINE=${RELAY_ENGINE:-strfry}
+case "$RELAY_ENGINE" in strfry|vrelay) ;; *) die "RELAY_ENGINE is strfry or vrelay, not \"$RELAY_ENGINE\"" ;; esac
+# What keeps the members and judges a request of a team or channel server:
+# vguard in front of strfry, or vrelay itself (the texts of nginx and the card).
+ACCESS_JUDGE=vguard
+[ "$RELAY_ENGINE" = vrelay ] && ACCESS_JUDGE=vrelay
+num_re='^[0-9]{1,8}$'
+for k in RELAY_IP_MAX_CONNECTIONS RELAY_IP_CONNECTS_PER_SEC RELAY_IP_CONNECT_BURST RELAY_MAX_CONNECTIONS RELAY_IP6_NET_MAX_CONNECTIONS NGINX_WORKER_CONNECTIONS; do
+    # RELAY_MAX_CONNECTIONS empty: counted from the memory (components/vrelay.sh).
+    [ "$k" = RELAY_MAX_CONNECTIONS ] && [ -z "${!k}" ] && continue
+    [[ "${!k}" =~ $num_re ]] || die "$k: a number, not \"${!k}\""
+    printf -v "$k" '%s' "$((10#${!k}))"
+done
+[ "$RELAY_IP_MAX_CONNECTIONS" -ge 1 ] && [ "$RELAY_IP_CONNECTS_PER_SEC" -ge 1 ] && [ "${RELAY_MAX_CONNECTIONS:-1}" -ge 1 ] \
+    || die "RELAY_IP_MAX_CONNECTIONS, RELAY_IP_CONNECTS_PER_SEC and RELAY_MAX_CONNECTIONS are 1 or more"
+# The /48 holds the /64 (a rule of vrelay): a server whose limit of an
+# address was raised before this cap came is raised with it, not refused.
+if [ "$RELAY_IP6_NET_MAX_CONNECTIONS" -lt "$RELAY_IP_MAX_CONNECTIONS" ]; then
+    warn "RELAY_IP6_NET_MAX_CONNECTIONS $RELAY_IP6_NET_MAX_CONNECTIONS is below RELAY_IP_MAX_CONNECTIONS $RELAY_IP_MAX_CONNECTIONS: raised to it (the /48 holds the /64)"
+    RELAY_IP6_NET_MAX_CONNECTIONS=$RELAY_IP_MAX_CONNECTIONS
+fi
+[ "$NGINX_WORKER_CONNECTIONS" -ge 768 ] && [ "$NGINX_WORKER_CONNECTIONS" -le 262144 ] \
+    || die "NGINX_WORKER_CONNECTIONS: 768 (Debian's) to 262144"
+audit_re='^(tcp|udp)/[0-9]{1,5}(-[0-9]{1,5})?$'
+for a in $AUDIT_ALLOW; do [[ "$a" =~ $audit_re ]] || die "AUDIT_ALLOW takes tcp/<port> and udp/<port>[-<last>], not \"$a\""; done
+MESH=0
+if has relay && [ "$RELAY_ENGINE" = vrelay ]; then
+    # The mesh: Cassandra and NATS of several servers go over WireGuard
+    # alone, never across the internet in the clear (lib/mesh.sh).
+    mesh_load
+    if [ "$MESH" = 0 ]; then
+        [ -n "$RELAY_DC" ] || RELAY_DC=$SERVER
+        [[ "$RELAY_DC" =~ ^[A-Za-z0-9_-]{1,48}$ ]] || die "RELAY_DC: letters, digits, - and _ only (the datacenter of Cassandra)"
+    fi
+    [ -z "$RELAY_CASSANDRA_HEAP_MB" ] || [[ "$RELAY_CASSANDRA_HEAP_MB" =~ ^[0-9]{3,6}$ ]] || die "RELAY_CASSANDRA_HEAP_MB: megabytes, 512 or more"
+fi
 for k in $(sites_wanted && echo MESH_APP_KEY MESH_PEER_KEY); do
     [[ "${!k}" =~ ^[A-Za-z0-9._~-]{32,}$ ]] || die "server.conf: $k is odd (letters, digits, ._~- only, 32 or more)"
 done
 ! sites_wanted || [ "$MESH_APP_KEY" != "$MESH_PEER_KEY" ] || die "server.conf: the app key and the peer key must differ"
+[ -z "$MESH_STATS_KEY" ] || [[ "$MESH_STATS_KEY" =~ ^[0-9a-f]{64}$ ]] || die "server.conf: MESH_STATS_KEY is 64 hex digits, lowercase (openssl rand -hex 32), the same on every server of the network"
 case "$TLS" in
     letsencrypt) ! sites_wanted || [ -n "$ACME_EMAIL" ] || die "ACME_EMAIL is empty (needed by Let's Encrypt)" ;;
     selfsigned) ;;
@@ -452,7 +514,7 @@ if has relay && [[ " $MESH_RELAY_FQDNS" != *" $RELAY_FQDN "* ]]; then
 fi
 # Members and invites live in the vguard of one relay: the other relays of
 # the network neither know them nor ask for them.
-if access_on && [ -n "$PEERS" ]; then warn "$(msg warn_access_many_relays)"; fi
+if access_on && [ -n "$PEERS" ]; then m=$(msg warn_access_many_relays); warn "${m//vguard/$ACCESS_JUDGE}"; fi
 MESH_MEDIA_FQDNS=""
 for m in $MESH_MEDIA; do MESH_MEDIA_FQDNS+="$(fqdn "$m") "; done
 if has media && renamed "$MESH_MEDIA_FQDNS" "$MEDIA_FQDN" "$MEDIA_ALIAS_FQDNS"; then
@@ -509,6 +571,14 @@ say "this server: $SERVER, region $REGION, components: $COMPONENTS"
 [ -n "$ALIAS_HOSTS" ] && say "also answers as: $ALIAS_HOSTS(certificates once their DNS points here)"
 has relay && say "relay  wss://$RELAY_FQDN  peers: ${PEERS:-none}  push of the Veydan network: $PUSH_GATEWAY$VPUSH_ADDED$VPUSH_NOTE"
 has relay && say "access $ACCESS_MODE${ADMIN_PUBKEY:+  owner: $ADMIN_PUBKEY}"
+has relay && say "engine $RELAY_ENGINE$([ "$RELAY_ENGINE" = vrelay ] && echo " (Cassandra datacenter $RELAY_DC$([ -d "$(target /opt/strfry)" ] && echo "; strfry is stopped and kept"))")"
+[ "$MESH" = 1 ] && say "mesh   $MESH_IF $MESH_IP/$MESH_PREFIX, region $MESH_DC (hub of the leaf links: $MESH_HUB_DC), peers: ${PEER_NAME[*]:-none}; seeds $MESH_SEEDS; copies $MESH_REPLICATION"
+# vrelay connects to no other relay: the routers of the strfry relays of the
+# network bring it what they have and take what it has, both ways. The
+# relays of the mesh share its store and its bus instead.
+if has relay && [ "$RELAY_ENGINE" = vrelay ] && [ "$MESH" = 0 ] && [ -n "$PEERS" ]; then
+    warn "vrelay: this relay connects to none of its peers (${PEERS% }); their strfry routers connect to it. Two relays of the vrelay engine in one network do not exchange events yet (services/relay/spec/design.md 6)"
+fi
 if has media; then
     if [ -n "$S3_ENDPOINT" ]; then
         say "media  https://$MEDIA_FQDN  (files in the bucket $S3_BUCKET at $S3_ENDPOINT, index here)"
@@ -530,10 +600,16 @@ fi
 
 # shellcheck source=components/base.sh
 . "$HERE/components/base.sh"
+# The relay: strfry with vguard in front, or vrelay (RELAY_ENGINE). The one
+# not chosen is stopped once nginx points to the other (relay-engine.sh).
+if [ "$RELAY_ENGINE" = strfry ]; then
 # shellcheck source=components/strfry.sh
 has relay && . "$HERE/components/strfry.sh"
 # shellcheck source=components/guard.sh
 has relay && . "$HERE/components/guard.sh"
+fi
+# shellcheck source=components/vrelay.sh
+has relay && [ "$RELAY_ENGINE" = vrelay ] && . "$HERE/components/vrelay.sh"
 # shellcheck source=components/libsql.sh
 has media && . "$HERE/components/libsql.sh"
 # shellcheck source=components/blossom.sh
@@ -554,8 +630,32 @@ done
 has agent && . "$HERE/components/agent.sh"
 # shellcheck source=components/nginx.sh
 [ -z "$HOSTS" ] || . "$HERE/components/nginx.sh"
+# shellcheck source=components/relay-engine.sh
+has relay && . "$HERE/components/relay-engine.sh"
 # shellcheck source=components/manifest.sh
 . "$HERE/components/manifest.sh"
+
+# The relay of vrelay, once every component has made its users: the agent
+# (made after vrelay on a first run) reads the statistics by the group
+# vrelay-stats and through the local lock (vrelay-local-lock.sh), which
+# names the users there are when it is put.
+if has relay && [ "${RELAY_ENGINE:-strfry}" = vrelay ]; then
+    if id vagent >/dev/null 2>&1 && ! id -nG vagent 2>/dev/null | tr ' ' '\n' | grep -qx vrelay-stats; then
+        run usermod -a -G vrelay-stats vagent
+        run systemctl try-restart vagent.service
+    fi
+    run systemctl restart vrelay-local-lock.service
+fi
+
+# What listens where, the passwords of the store, the modes of the secrets
+# (veydan-server audit): a finding fails the run, after everything is in
+# place, so that it is seen.
+AUDIT_FAILED=0
+if [ "$DRY" = 1 ]; then
+    run veydan-server audit
+elif ! VEYDAN_STATE=$STATE bash "$HERE/templates/veydan-server" audit; then
+    AUDIT_FAILED=1
+fi
 
 say "done"
 if [ "${#WARNINGS[@]}" -gt 0 ]; then
@@ -564,4 +664,5 @@ if [ "${#WARNINGS[@]}" -gt 0 ]; then
     for w in "${WARNINGS[@]}"; do echo "  - $w"; done
 fi
 [ "$DRY" = 1 ] && echo "Dry run files: $DRY_ROOT"
+[ "$AUDIT_FAILED" = 0 ] || die "the audit found what is above: everything is installed, but this server is not as the kit allows (veydan-server audit)"
 exit 0
